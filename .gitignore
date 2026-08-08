@@ -13,6 +13,9 @@ vendor/
 zig-out/
 zig-pkg/
 
+# Packaged flash images (upload via GitHub Releases — do not commit binaries)
+dist/
+
 # Node / local tooling (not required to build/flash)
 node_modules/
 **/node_modules/

@@ -138,6 +138,25 @@ LICENSE              MIT
 
 ---
 
+## Prebuilt flash images
+
+Download the **v2.0.0** release assets (do not commit large `.bin` files to git):
+
+https://github.com/BufferRoot/Modulus-Firmware/releases/tag/v2.0.0
+
+| Zip | Chip | Flash ports (typical) |
+|-----|------|------------------------|
+| `modulus-tab5-p4-v2.0.0.zip` | ESP32-P4 | COM5 |
+| `modulus-tab5-c6-v2.0.0.zip` | ESP32-C6 | COM6 (hold BOOT if needed) |
+| `modulus-nanoh2-v2.0.0.zip` | ESP32-H2 | USB-C on NanoH2 |
+| `modulus-s3-bridge-v2.0.0.zip` | ESP32-S3 | COM8 |
+
+Each zip has bootloader + partition table + app + `FLASH.md` with exact `esptool` offsets. Verify against `SHA256SUMS.txt` on the release.
+
+Rebuild from source anytime with the scripts below; to re-pack local builds: `.\scripts\package_flash_images.ps1`.
+
+---
+
 ## Build & flash
 
 **Prerequisites:** Zig **0.16+** · ESP-IDF **6.0** · target `esp32p4`
