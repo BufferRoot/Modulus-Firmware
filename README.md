@@ -140,26 +140,102 @@ LICENSE              MIT
 
 ## Prebuilt flash images
 
-Download the **v2.0.0** release assets (do not commit large `.bin` files to git):
+Download **v2.0.0** assets (bootloader + partition table + app per target):
 
-https://github.com/BufferRoot/Modulus-Firmware/releases/tag/v2.0.0
+**https://github.com/BufferRoot/Modulus-Firmware/releases/tag/v2.0.0**
 
-| Zip | Chip | Flash ports (typical) |
-|-----|------|------------------------|
-| `modulus-tab5-p4-v2.0.0.zip` | ESP32-P4 | COM5 |
-| `modulus-tab5-c6-v2.0.0.zip` | ESP32-C6 | COM6 (hold BOOT if needed) |
-| `modulus-nanoh2-v2.0.0.zip` | ESP32-H2 | USB-C on NanoH2 |
-| `modulus-s3-bridge-v2.0.0.zip` | ESP32-S3 | COM8 |
+| Zip | Chip | What it is | Typical port |
+|-----|------|------------|--------------|
+| `modulus-tab5-p4-v2.0.0.zip` | ESP32-P4 | Pendant UI + control | COM5 (Tab5 USB) |
+| `modulus-tab5-c6-v2.0.0.zip` | ESP32-C6 | ESP-Hosted / ESP-NOW radio | COM6 (C6 USB; hold **BOOT** if needed) |
+| `modulus-nanoh2-v2.0.0.zip` | ESP32-H2 | Zigbee shop hub | NanoH2 USB-C (hold **BUTTON**) |
+| `modulus-s3-bridge-v2.0.0.zip` | ESP32-S3 | Cabinet ESP-NOW → UART | COM8 (bridge board) |
+| `SHA256SUMS.txt` | — | Checksums for every `.bin` | — |
 
-Each zip has bootloader + partition table + app + `FLASH.md` with exact `esptool` offsets. Verify against `SHA256SUMS.txt` on the release.
+### What you need
 
-Rebuild from source anytime with the scripts below; to re-pack local builds: `.\scripts\package_flash_images.ps1`.
+1. [esptool](https://docs.espressif.com/projects/esptool/) (`pip install esptool`) **or** ESP-IDF 6 `idf.py` / `python -m esptool`
+2. USB cables + drivers for each chip
+3. Unzip each package into its own folder (commands below assume you `cd` into that folder)
+
+**Flash order (first bring-up):** C6 → P4 → S3 bridge → NanoH2 (optional). Power-cycle the Tab5 after C6+P4. Keep the machine E-Stop in reach.
+
+COM ports on your PC may differ — change `-p COMx` to match Device Manager.
+
+### 1. Tab5 C6 (wireless slave)
+
+Unzip `modulus-tab5-c6-v2.0.0.zip`, then:
+
+```powershell
+cd path\to\tab5-c6
+esptool.py --chip esp32c6 -p COM6 --before default-reset --after hard-reset write_flash `
+  --flash-mode dio --flash-freq 80m --flash-size 4MB `
+  0x0 bootloader.bin `
+  0x8000 partition-table.bin `
+  0xd000 ota_data_initial.bin `
+  0x10000 network_adapter.bin
+```
+
+If the port never appears: hold **BOOT** on the C6 while plugging USB, then run the command.
+
+### 2. Tab5 P4 (main pendant)
+
+Unzip `modulus-tab5-p4-v2.0.0.zip`, then:
+
+```powershell
+cd path\to\tab5-p4
+esptool.py --chip esp32p4 -p COM5 --before default-reset --after hard-reset write_flash `
+  --flash-mode dio --flash-freq 40m --flash-size 16MB `
+  0x2000 bootloader.bin `
+  0x8000 partition-table.bin `
+  0x10000 modulus_tab5.bin
+```
+
+Power-cycle the Tab5. Cold boot should show wireless / SDIO ready (not `0x107`).
+
+### 3. ESP32-S3 bridge (cabinet)
+
+Unzip `modulus-s3-bridge-v2.0.0.zip`, then:
+
+```powershell
+cd path\to\s3-bridge
+esptool.py --chip esp32s3 -p COM8 --before default-reset --after hard-reset write_flash `
+  --flash-mode dio --flash-freq 80m --flash-size 8MB `
+  0x0 bootloader.bin `
+  0x8000 partition-table.bin `
+  0x10000 s3_espnow_uart_bridge.bin
+```
+
+Wire S3 UART to your CNC (grblHAL) serial. On the Tab5: **Settings → Wireless → ESP-NOW → enter S3 MAC**, lock channel **1 / 6 / 11**.
+
+### 4. NanoH2 (Zigbee hub, optional)
+
+Enable **EXT5V** for Grove/H2 power. Unzip `modulus-nanoh2-v2.0.0.zip`, hold **BUTTON** on the Stamp, then:
+
+```powershell
+cd path\to\nanoh2
+esptool.py --chip esp32h2 -p COM7 --before default-reset --after hard-reset write_flash `
+  --flash-mode dio --flash-freq 48m --flash-size 4MB `
+  0x0 bootloader.bin `
+  0x8000 partition-table.bin `
+  0x10000 modulus_nanoh2.bin
+```
+
+UART to Tab5 is GPIO6 TX / GPIO7 RX @ 460800. **Never** flash C6 with Zigbee-exclusive builds — Zigbee stays on NanoH2.
+
+### Verify
+
+- Compare downloaded `.bin` hashes to `SHA256SUMS.txt`
+- After P4+C6: idle dashboard ≥ ~55 s with no IDLE0 WDT
+- ESP-NOW path: status shows **Connected** once S3 MAC/channel are set
+
+Each zip also includes `FLASH.md` with the same offsets.
 
 ---
 
-## Build & flash
+## Build from source
 
-**Prerequisites:** Zig **0.16+** · ESP-IDF **6.0** · target `esp32p4`
+**Prerequisites:** Zig **0.16+** · ESP-IDF **6.0**
 
 ```bash
 git clone https://github.com/BufferRoot/Modulus-Firmware.git
@@ -171,11 +247,11 @@ zig build tab5-lib    # freestanding Zig library
 | Target | Command |
 |--------|---------|
 | Tab5 P4 | `.\scripts\build_tab5.ps1` then `.\scripts\flash_tab5.ps1 -Port COM5` |
-| Tab5 C6 | `.\scripts\flash_tab5_dual.ps1 -C6Port COM6 -P4Port COM5` *(never `-ZigbeeExclusive`)* |
+| Tab5 C6 + P4 | `.\scripts\flash_tab5_dual.ps1 -C6Port COM6 -P4Port COM5` *(never `-ZigbeeExclusive`)* |
 | NanoH2 | `idf.py -C firmware/nanoh2 flash` (hold BUTTON; enable EXT5V) |
 | S3 bridge | `.\scripts\build_s3_bridge.ps1 -Action flash -Port COM8` |
 
-Then: **Settings → Wireless → ESP-NOW → S3 MAC**, lock channel **1 / 6 / 11**.
+Re-pack local builds into release zips: `.\scripts\package_flash_images.ps1`.
 
 ### Pinout (Tab5)
 
