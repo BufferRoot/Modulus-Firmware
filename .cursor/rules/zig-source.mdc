@@ -1,0 +1,29 @@
+---
+description: Zig source file patterns — memory, defer, errors, comptime
+globs: "**/*.zig"
+alwaysApply: false
+---
+
+# Zig Source Rules
+
+## Memory
+
+- Stack by default. Heap via `allocator.create`, `.alloc`, `ArrayList`, `ArenaAllocator`.
+- `defer` runs LIFO on **every** scope exit (success, error, break). `errdefer` runs only on error exit from current block.
+- Long-lived owned data: caller allocates or document transfer. Use `ArenaAllocator` for batch free.
+
+## Errors
+
+- `if (result) |val| { } else |err| { }` — capture required on error branch.
+- `@errorReturnTrace()` for programmatic trace; enabled Debug/ReleaseSafe.
+- Narrow error sets at API boundaries; merge with `A || B` for platform branches.
+
+## Comptime
+
+- `comptime` params must be known at call site. `@TypeOf`, `@typeInfo`, `@sizeOf` for reflection.
+- `inline while` / `inline for` unroll at compile time when index is comptime-known.
+
+## C interop
+
+- Match C ABI: `[*c]T` for unknown mutability; prefer `[*]T` / `*T` after review.
+- `@export` / `export` for Zig→C. `linkSystemLibrary("foo")` in `build.zig`.

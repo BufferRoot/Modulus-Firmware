@@ -1,0 +1,75 @@
+---
+description: Modulus Zig project conventions — allocator, errors, comptime, C interop, std module policy
+alwaysApply: true
+---
+
+# Modulus Zig
+
+Zig **0.16+**. Load skill **`zig-core`** for mechanics; **`zig-build`** for build/test/MCP; **`zig-port`** when porting firmware layers from C++ reference. Recall playbook: **`MEMORY.md` § Zig creation playbook**.
+
+## MUST
+
+- Pass `std.mem.Allocator` explicitly; no hidden heap. Pair every alloc with `defer` or `errdefer`.
+- Return `ErrorSet!T` or `!T` (inferred set); propagate with `try`. Never silently ignore errors.
+- Use `comptime` for generics (type params, `inline for`); no runtime type erasure.
+- **Host code:** `pub fn main(init: std.process.Init) !void`; thread `init.gpa`, `init.io`, `init.arena` (CLI temps).
+- **C interop:** prefer `b.addTranslateC` in `build.zig` (one module per binary); `@cImport` legacy only. Link `-lc` / `linkLibC()`.
+- **ArrayList (0.16):** `.empty`, `append(allocator, …)`, `deinit(allocator)`; `Io.Writer.Allocating.fromArrayList`.
+- **HashMap (host tests only):** `StringHashMapUnmanaged` — `.empty`, `getOrPut(allocator, k)`, `deinit(allocator)`.
+- **Logging:** import `core/host_log.zig` (host CLI) or `core/device_log.zig` (settings/ui) — not raw `std.log.scoped` in feature modules.
+- **Rings / queues:** fixed arrays or SPSC atomics (`rx_ring`, `event_bus`); no std ring; no heap in Core 1.
+- **ABI:** shared structs = C header + `extern struct`; update `firmware/abi_layout.zig`; flags = `u8`; new exports prefer `c_int` 0/1.
+- Run `zig build test` (or `zig build ci`) after changes. **Every host test** uses `std.testing.allocator` or `modulus.testing.LeakGuard`.
+- Firmware hot paths (Core 1, ISR): **no heap** — `FixedBufferAllocator` or init-scoped arena only.
+- Tab5 `tab5-lib`: **ReleaseSafe pinned** — never ReleaseSmall on device UI.
+- See **`.cursor/rules/zig-pitfalls.mdc`** for issue-derived guardrails.
+
+## NEVER
+
+- `malloc`/`free` without allocator param. `catch {}` on errors. `anyerror` in public APIs when avoidable.
+- `defer`/`errdefer` with `return` inside. Ownership transfer without documenting who frees.
+- Multiple `@cImport` / translate-C modules without reason (duplicates clang work).
+- Pre-0.16 APIs: `std.io`, `ArrayList.init`, `@Type`, `list.writer()`, `std.heap.GeneralPurposeAllocator` (use `DebugAllocator` in 0.16).
+- HashMap managed `.init(allocator)` — use Unmanaged + explicit allocator per op.
+- `std.json` / `std.compress` on device hot paths or Core 1 loops.
+- `@bitCast` in protocol/FFI code; `packed struct` in ABI paths; odd-width ints in protocol.
+- Log in Core 1 1 kHz+ loops or ISR.
+- Tests that pass a custom allocator but never `deinit` containers on error paths.
+
+## New file checklist
+
+1. Host vs device: `build_options.device_nvs` comptime split if needed.
+2. Allocator param on every heap use; `errdefer` on partial init.
+3. C-facing types → extend `abi_layout.zig` + C header + translate bundle + stub sync.
+4. `zig build test` + `translate-check` if shims touched.
+5. CBM re-index after new `src/**/*.zig`.
+
+## Patterns
+
+```zig
+// Resource on success path → errdefer; always-cleanup → defer
+const buf = try allocator.alloc(u8, n);
+errdefer allocator.free(buf);
+defer cleanupTemp();
+
+// Host entry (0.16)
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const io = init.io;
+    const arena = init.arena.allocator();
+    _ = arena;
+    _ = io;
+    _ = gpa;
+}
+
+// Generic container
+fn List(comptime T: type) type { return struct { /* ... */ }; }
+```
+
+## Agent pipeline
+
+1. **`zig-port`** skill — layer order and verify gates when porting from C++ reference
+2. CBM graph after adding `src/**/*.zig`
+3. zig-mcp (`zig_diagnostics`, `zig_test`) when ZLS configured — see `zig-build` skill
+4. Token Savior for symbol navigation in large files
+5. Ruflo `patterns` namespace — recall Zig playbook decisions via `memory_search`

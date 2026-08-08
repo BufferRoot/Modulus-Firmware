@@ -1,0 +1,55 @@
+menu "Modulus Zig C6"
+
+config MODULUS_ZIG_C6_RUNTIME
+    bool "Link Modulus Zig C6 runtime (modulus_zig_c6)"
+    default n
+    help
+        Opt-in: app_main starts Zig via modulus_c6_runtime_start().
+        Product image stays C (espnow_handler + hosted). Enable only for experiments.
+
+config MODULUS_C6_BLE
+    bool "NimBLE controller on C6 (MODULUS_TAB5 GAP name)"
+    default y
+    help
+        Local NimBLE host after esp_hosted init. esp_hosted 2.11 RPC is Wi-Fi-only;
+        P4 BLE HCI/RPC is a later milestone. Disable to save flash/RAM.
+
+config MODULUS_C6_ESPNOW
+    bool "ESP-NOW peer links on C6 (alongside esp_hosted Wi-Fi)"
+    default n
+    help
+        Autonomous esp_now on C6 after esp_wifi_start. Default off: SDIO
+        espnow_handler owns callbacks. Enable only for experiments.
+
+config MODULUS_C6_ESPNOW_SEND_TEST
+    bool "Send ESP-NOW test broadcast (MODULUS) on init"
+    default y
+    depends on MODULUS_C6_ESPNOW
+
+config MODULUS_C6_THREAD
+    bool "OpenThread 802.15.4 on C6 (detached milestone)"
+    default n
+    depends on !MODULUS_C6_ZIGBEE_EXCLUSIVE
+    select OPENTHREAD_ENABLED
+    help
+        Off by default: ESP-NOW-first Modulus image keeps C6 free of 802.15.4.
+        Enable only for a dedicated Thread build (coex with Wi-Fi/BLE).
+        Mutually exclusive with CONFIG_MODULUS_C6_ZIGBEE_EXCLUSIVE (one 802.15.4 radio).
+
+config MODULUS_C6_ZIGBEE
+    bool "Zigbee 802.15.4 policy on C6 (defer or exclusive stack)"
+    default n
+    help
+        Default product: Zigbee on NanoH2, not C6.
+        Enable CONFIG_MODULUS_C6_ZIGBEE_EXCLUSIVE + esp-zigbee-lib for ZBOSS init.
+
+config MODULUS_C6_ZIGBEE_EXCLUSIVE
+    bool "Zigbee exclusive (disables Thread; links esp-zigbee-lib)"
+    default n
+    depends on MODULUS_C6_ZIGBEE
+    help
+        One 802.15.4 radio cannot run OpenThread and ZBOSS together.
+        Build with sdkconfig.defaults.zigbee and idf_component.zigbee.yml.
+        Milestone: esp_zb_init log, factory-new, no network steering.
+
+endmenu

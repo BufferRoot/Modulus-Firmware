@@ -1,0 +1,13 @@
+# DEPRECATED — do not use.
+#
+# Zigbee no longer runs on the C6. It moved to a dedicated NanoH2 (ESP32-H2)
+# reached over UART from the P4. See firmware/nanoh2/.
+#
+# This file configured the old "ZigbeeExclusive" C6 build (ZBOSS coordinator
+# on the shared radio), which is exactly the arrangement that caused ESP-NOW
+# to drop when Zigbee was active. It is retained only as a historical marker;
+# building with it will put a ZBOSS coordinator back on the C6 radio and
+# reintroduce the coexistence failure.
+#
+# For the C6, use hosted/sdkconfig.defaults.modulus (Wi-Fi/ESP-NOW/BLE +
+# Thread, no Zigbee).

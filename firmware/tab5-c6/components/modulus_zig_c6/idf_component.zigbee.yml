@@ -1,0 +1,5 @@
+## Optional — copied to idf_component.yml when building with -ZigbeeExclusive
+dependencies:
+  idf: ">=6.0.0"
+  espressif/esp-zboss-lib: "^1.6.0"
+  espressif/esp-zigbee-lib: "^2.0.1"

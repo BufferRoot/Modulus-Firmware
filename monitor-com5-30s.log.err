@@ -1,0 +1,2 @@
+Error: Monitor requires standard input to be attached to TTY. Try using a different terminal.
+idf_monitor failed with exit code 1, output of the command is in the C:\Users\BEAST MODE\Desktop\Modulus Convert to ZIG\firmware\tab5\build\log\idf_py_stderr_output_32032 and C:\Users\BEAST MODE\Desktop\Modulus Convert to ZIG\firmware\tab5\build\log\idf_py_stdout_output_32032

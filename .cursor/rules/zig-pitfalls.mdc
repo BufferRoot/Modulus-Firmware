@@ -1,0 +1,44 @@
+---
+description: Zig 0.16 pitfalls from upstream issues/PRs — prevent repeat toolchain and migration mistakes
+alwaysApply: true
+---
+
+# Zig Pitfalls (0.16+)
+
+Sourced from [ziglang/zig](https://codeberg.org/ziglang/zig) issues/PRs and 0.16 release notes. Load skill **`zig-port`** when porting Modulus firmware layers.
+
+## MUST (0.16)
+
+- Host `main`: `pub fn main(init: std.process.Init) !void` — thread `init.gpa` and `init.io`.
+- `ArrayList`: `.empty` + `ensureTotalCapacity`; `append(allocator, x)`; `deinit(allocator)`.
+- Prefer **`addTranslateC`** in `build.zig` over `@cImport` (deprecated); one translate module per binary.
+- `build.zig.zon`: `minimum_zig_version = "0.16.0"`; refresh deps with `zig fetch --save` — never hand-edit fingerprints.
+- Tests: `std.testing.allocator` + `std.testing.io` (host only). `LeakGuard` / `withNoLeaks` for multi-phase tests (`src/modulus/testing/leak_guard.zig`).
+- Leak check: `std.heap.DebugAllocator` (0.16); not `GeneralPurposeAllocator`.
+- Firmware translate-C: **same** `-target` as link (`riscv32-freestanding-none` for P4 objects).
+- Pin Zig patch version in CI; re-run full test after compiler bump.
+
+## NEVER
+
+- `std.io` (lowercase), `ArrayList.init`, `list.writer()`, `list.append(x)` without allocator — pre-0.16 APIs.
+- `@Type(...)` — use `@Struct`, `@Int`, `@Tuple`, `@Pointer`, etc.
+- `Io.Threaded.init_single_threaded` deep in libraries (smell: use injected `io` from `main`).
+- Circular `build.zig` module imports (0.16 DAG rejects loops).
+- `packed struct` as function return @ ReleaseSafe ([#35634](https://codeberg.org/ziglang/zig/issues/35634)).
+- Odd-width ints (`i24`) in protocol code on self-hosted backend ([#35597](https://codeberg.org/ziglang/zig/issues/35597)).
+- `bool` across C FFI without ABI verification ([#35373](https://codeberg.org/ziglang/zig/issues/35373)) — prefer `c_int` in new shims.
+- Heap alloc in Core 1 / ISR / 1 kHz+ loops (Modulus hot path).
+- Incremental `--watch` inside `/tmp` ([#35365](https://codeberg.org/ziglang/zig/issues/35365)) — stale binaries.
+- Port C6 ESP-Hosted slave to Zig (stay C 1.4.0).
+
+## When build breaks
+
+1. `zig build -fno-incremental` then clean `zig-out` / project `zig-pkg/`.
+2. Check optimize mode (ReleaseSmall miscompiles: [#35560](https://codeberg.org/ziglang/zig/issues/35560)).
+3. Search [Codeberg issues](https://codeberg.org/ziglang/zig/issues) (new ≥30000); GitHub read-only for history.
+4. Minimal repro before blaming application code.
+
+## Upstream
+
+- Canonical repo: **Codeberg** (not GitHub for new issues).
+- Zig 0.16.x: *"This Release Contains Bugs"* — non-trivial projects may need pinned compiler or master tracking.

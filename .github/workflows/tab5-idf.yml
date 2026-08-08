@@ -1,0 +1,71 @@
+name: Tab5 IDF build
+
+on:
+  push:
+    paths:
+      - "src/**"
+      - "firmware/tab5/**"
+      - "build.zig"
+      - "build.zig.zon"
+      - "scripts/**"
+      - ".github/workflows/tab5-idf.yml"
+      - ".github/zig-version"
+  pull_request:
+    paths:
+      - "src/**"
+      - "firmware/tab5/**"
+      - "build.zig"
+      - "build.zig.zon"
+      - "scripts/**"
+      - ".github/workflows/tab5-idf.yml"
+      - ".github/zig-version"
+
+jobs:
+  tab5-idf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned Zig version
+        id: zig
+        run: echo "version=$(tr -d '\r\n' < .github/zig-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: ${{ steps.zig.outputs.version }}
+
+      - name: Verify Zig patch matches pin
+        run: test "$(zig version | awk '{print $2}')" = "$(tr -d '\r\n' < .github/zig-version)"
+
+      - name: UI ASCII check
+        shell: pwsh
+        run: ./scripts/check_ui_ascii.ps1
+
+      - name: Zig CI gate (test + fuzz + translate + tab5-lib + headers + NVS)
+        run: zig build ci -- --test-timeout 60s
+
+      - name: Cache managed components
+        uses: actions/cache@v4
+        with:
+          path: firmware/tab5/managed_components
+          key: tab5-managed-${{ hashFiles('firmware/tab5/main/idf_component.yml', 'firmware/tab5/dependencies.lock') }}
+          restore-keys: |
+            tab5-managed-
+
+      - name: Install ESP-IDF
+        uses: espressif/install-esp-idf-action@v1
+        with:
+          version: "v6.0.1"
+
+      - name: Patch IDF 6 managed deps
+        shell: pwsh
+        run: ./scripts/patch_tab5_idf6_deps.ps1
+
+      - name: IDF build
+        working-directory: firmware/tab5
+        run: |
+          export ZIG_EXE="$(command -v zig)"
+          export ZIG_LIB_DIR="$(zig env | python3 -c "import sys,re; m=re.search(r'lib_dir = \"([^\"]+)\"', sys.stdin.read()); print(m.group(1) if m else '')")"
+          idf.py set-target esp32p4
+          idf.py build

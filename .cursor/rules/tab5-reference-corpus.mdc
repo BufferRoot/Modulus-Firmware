@@ -1,0 +1,33 @@
+---
+description: Use local Tab5 hardware reference before web fetch
+alwaysApply: true
+---
+
+# Tab5 reference corpus (token savings)
+
+Before fetching https://docs.m5stack.com/en/core/Tab5 or GitHub for **pin map, specs, interconnect, SDIO, power rules**:
+
+1. Read `docs/hardware/tab5/INDEX.md` and linked files
+2. Use `.agents/skills/m5stack-tab5/` for workflow summaries
+3. Web/GitHub only for **delta** (new commits, unreleased errata)
+
+## Local path
+
+`docs/hardware/tab5/`
+
+| Need | File |
+|------|------|
+| PDF registers / timing | `datasheets/` or `datasheets-catalog.md` |
+| Espressif repo pick | `espressif-ecosystem.md` |
+| Camera / SC2356 | `sc2356-camera.md` |
+| UserDemo / C6 flash | `m5-software-guides.md` |
+| GPIO tables | `pinmap.md` |
+| Bus wiring | `interconnect.md` |
+| PI4IOE | `io-expander.md` |
+| C6 / Wi-Fi | `esp-hosted-sdio.md` |
+| ST7123 / display | `display-revisions.md` |
+| Shutdown / BMI270 | `power-operational.md` |
+| BSP `#define`s | `bsp-constants.md` |
+| Repos | `github-sources.md` |
+
+After hardware doc updates, bump date in `INDEX.md` and `MEMORY.md`.

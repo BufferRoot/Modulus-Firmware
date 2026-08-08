@@ -1,0 +1,51 @@
+name: Zig test
+
+on:
+  push:
+    paths:
+      - "src/**"
+      - "tools/**"
+      - "build.zig"
+      - "build.zig.zon"
+      - "firmware/tab5/components/modulus_zig/include/modulus_shims_bundle.h"
+      - "firmware/tab5/components/modulus_zig/include/*_shim.h"
+      - ".github/workflows/zig-test.yml"
+      - ".github/zig-version"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tools/**"
+      - "build.zig"
+      - "build.zig.zon"
+      - "firmware/tab5/components/modulus_zig/include/modulus_shims_bundle.h"
+      - "firmware/tab5/components/modulus_zig/include/*_shim.h"
+      - ".github/workflows/zig-test.yml"
+      - ".github/zig-version"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned Zig version
+        id: zig
+        run: echo "version=$(tr -d '\r\n' < .github/zig-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: ${{ steps.zig.outputs.version }}
+
+      - name: Verify Zig patch matches pin
+        run: test "$(zig version | awk '{print $2}')" = "$(tr -d '\r\n' < .github/zig-version)"
+
+      - name: Format check
+        run: zig fmt --check src/ tools/
+
+      - name: Zig CI gate
+        run: zig build ci --summary all
+
+      - name: Continuous parser fuzz (Unix)
+        run: zig build test --summary all -- --fuzz --test-filter "parser fuzz"
+        continue-on-error: true

@@ -1,0 +1,23 @@
+menu "Modulus Tab5"
+
+    config MODULUS_WIFI_ENABLED
+        bool "Enable C6 hosted wireless (esp_hosted SDIO)"
+        default y
+        help
+            When enabled, wireless_shim powers C6 via PI4IOE and brings up
+            esp_wifi_remote over esp_hosted. Disable for P4-only bring-up.
+
+    config MODULUS_C6_BOOT_DELAY_MS
+        int "Delay (ms) after WLAN_PWR_EN before esp_hosted connect"
+        depends on MODULUS_WIFI_ENABLED
+        default 5500
+        range 500 10000
+        help
+            Tab5 cold-boot: measure from first WLAN_PWR_EN (PI4IOE2 init in
+            display_shim), WLAN_PWR cycle in wireless_shim, or last GPIO15
+            reset (esp_hosted retry). C6 network_adapter needs ~3-5 s after
+            power; esp_hosted GPIO15 reset inside esp_wifi_init reboots C6 —
+            CONFIG_ESP_HOSTED_SDIO_RESET_DELAY_MS must match this margin.
+            Increase (5500 ms typical) if sdmmc_card_init returns 0x107.
+
+endmenu

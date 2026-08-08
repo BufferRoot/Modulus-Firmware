@@ -1,0 +1,41 @@
+# Phase 8c — Modulus C6 stays C (espnow_handler). Zig runtime opt-in only.
+# CONFIG_MODULUS_ZIG_C6_RUNTIME is not set
+
+# Match P4 host SDIO queue depth for ESP-NOW / RPC bursts (default 20)
+CONFIG_ESP_SDIO_RX_Q_SIZE=48
+CONFIG_ESP_SDIO_TX_Q_SIZE=32
+
+# Phase 9 — BLE policy/bridge (uses esp_hosted HCI controller; keep BT_CONTROLLER_ONLY)
+# Host suspends BLE while ESP-NOW is the CNC transport (frees Wi-Fi coex airtime).
+CONFIG_MODULUS_C6_BLE=y
+
+# Phase 10 — ESP-NOW on C6.
+# Disabled: ESP-NOW is owned by the SDIO command handler (main/espnow_handler.c)
+# driven by the P4 host (ESPNOW_CMD_INIT/PROBE). esp_now allows only ONE recv/send
+# callback globally, so the autonomous modulus_c6_espnow path cannot coexist with
+# the host-driven path — it would steal the callbacks and double-init esp_now.
+CONFIG_MODULUS_C6_ESPNOW=n
+# CONFIG_MODULUS_C6_ESPNOW_SEND_TEST is not set
+
+# Phase 11 — Thread OFF for ESP-NOW-first Modulus image.
+# OpenThread 802.15.4 + SW coex was the remaining airtime thief after Zigbee
+# moved to NanoH2. Re-enable only for a dedicated Thread build.
+CONFIG_MODULUS_C6_THREAD=n
+# CONFIG_OPENTHREAD_ENABLED is not set
+
+# SW coexistence kept for Wi-Fi/ESP-NOW <-> BLE HCI time-slicing.
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+# Zigbee removed from the C6 — it runs on the dedicated NanoH2 (ESP32-H2) over
+# UART now, which is what eliminates the ESP-NOW-drops-when-Zigbee-active bug
+# (no more Wi-Fi/802.15.4 contention driven by a ZBOSS coordinator here).
+CONFIG_MODULUS_C6_ZIGBEE=n
+
+# --- ESP-NOW unassociated-STA fix (esp_hosted 2.x regression) ---
+# The C6 runs WiFi STA but never associates to an AP (ESP-NOW only). esp_hosted
+# 2.11.4 defaults the disconnected-STA modem power-save ON, which sleeps the radio
+# between ops and drops the MAC-layer ACK on every ESP-NOW unicast (reason=0x01)
+# and the reply on every broadcast probe. esp_wifi_set_ps(WIFI_PS_NONE) does NOT
+# cover this path. The original working stack (esp_hosted 1.4.0) had it off.
+CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
+CONFIG_WIFI_RMT_STA_DISCONNECTED_PM_ENABLE=n

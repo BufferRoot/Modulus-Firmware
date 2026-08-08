@@ -1,0 +1,10 @@
+# Modulus Tab5 (ESP32-P4, 16 MB flash) partition table.
+# Default single-app factory is 1 MB; the font-rich LVGL dashboard image
+# exceeds that, so the app partition is enlarged (16 MB flash has room to spare).
+# Factory 5 MB (2026-06-14): ~43% headroom at current app size (~0x2dc620).
+# Headroom watch: scripts/build_tab5.ps1 warns when modulus_tab5.bin exceeds 85%
+# of factory (0x500000). OTA later: replace factory with ota_0/ota_1 at >= app size.
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+factory,  app,  factory, 0x10000,  0x500000,

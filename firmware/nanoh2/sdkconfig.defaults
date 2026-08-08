@@ -1,0 +1,24 @@
+# ESP-IDF v6.0 — Modulus NanoH2 Zigbee hub (ESP32-H2FH4S, 4 MB in-package flash)
+# Do not use legacy v5.x driver headers.
+
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# ZBOSS NVRAM partitions (zb_storage/zb_fct) — REQUIRED or esp_zb_start fails.
+# Must unset SINGLE_APP explicitly: set-target regenerates sdkconfig from Kconfig
+# defaults and will otherwise keep partitions_singleapp.csv (no zb_* → abort).
+# CONFIG_PARTITION_TABLE_SINGLE_APP is not set
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# USB Serial/JTAG console (Type-C on NanoH2) — UART0/1 stay free for the link
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=y
+
+# Zigbee 3.0 coordinator (ZBOSS, native H2 802.15.4 radio — no coex needed:
+# the H2 has no Wi-Fi silicon, which is the entire point of this board)
+CONFIG_ZB_ENABLED=y
+CONFIG_ZB_ZCZR=y
+CONFIG_ZB_RADIO_NATIVE=y
+
+CONFIG_COMPILER_OPTIMIZATION_DEFAULT=y

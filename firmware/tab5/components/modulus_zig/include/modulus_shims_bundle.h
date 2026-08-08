@@ -1,0 +1,24 @@
+#pragma once
+
+/* Umbrella header for Zig addTranslateC — Modulus-owned shims only (no ESP-IDF/LVGL includes). */
+
+#include "audio_shim.h"
+#include "battery_shim.h"
+#include "cnc_trace_shim.h"
+#include "display_shim.h"
+#include "dsp_shim.h"
+#include "event_shim.h"
+#include "ext_encoder_shim.h"
+#include "i18n_shim.h"
+#include "i2c_coex_shim.h"
+#include "imu_shim.h"
+#include "nvs_shim.h"
+#include "power_shim.h"
+#include "rtc_shim_translate.h"
+#include "security_shim.h"
+#include "serial_shim.h"
+#include "storage_shim.h"
+#include "touch_shim.h"
+#include "transport_shim.h"
+#include "ui_shim.h"
+#include "wireless_shim.h"

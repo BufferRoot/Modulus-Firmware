@@ -1,0 +1,27 @@
+# Firmware build outputs
+firmware/**/build/
+firmware/**/sdkconfig
+firmware/**/sdkconfig.old
+firmware/**/dependencies.lock
+firmware/**/managed_components/
+
+# Vendor reference clone
+vendor/
+
+# Zig
+.zig-cache/
+zig-out/
+
+# Per-project agent state (regenerate locally)
+.swarm/
+.claude/
+.claude-flow/
+.evolver/
+ruvector.db
+
+# Token Savior cache
+.token-savior-cache.json
+
+# Env
+.env
+.fallow/

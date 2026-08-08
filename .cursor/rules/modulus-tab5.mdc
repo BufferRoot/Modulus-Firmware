@@ -1,0 +1,41 @@
+---
+description: M5Stack Tab5 dual-chip hardware — P4 host, C6 wireless, power/IMU safeguards
+alwaysApply: true
+---
+
+# M5Stack Tab5 (SKU C145/K145)
+
+**Host:** ESP32-P4 (RISC-V, 360MHz, 16MB Flash, 32MB Octal PSRAM) — **no native RF**.  
+**Co-processor:** ESP32-C6-MINI-1U — Wi-Fi 6, Thread, Zigbee via **SDIO2** to P4.
+
+## Modulus firmware scope
+
+| Chip | Image | Path | Phase |
+|------|-------|------|-------|
+| ESP32-P4 | Modulus OS host | `firmware/tab5/` | **Now** |
+| ESP32-C6 | Hosted wireless slave | `firmware/tab5-c6/` (planned) | **Later** |
+
+**P4-only until C6 phase.** Two firmwares, two flash procedures. Do not merge into one IDF target.
+
+Load skills: `m5stack-tab5` (hardware), `esp-idf-6` + `esp-idf-build` (IDF 6.0).
+
+## MUST
+
+- Route **all wireless** through C6: ESP-Hosted (`esp_hosted` + `esp_wifi_remote`) or M5Unified/`WiFi.setPins()` — never P4-native Wi-Fi/BLE.
+- Use **M5Unified + M5GFX** (latest) for display/touch/board init; or **espressif/m5stack_tab5** BSP on ESP-IDF.
+- Display: **1280×720** MIPI-DSI; driver **ST7123** (newer) or ILI9881C+GT911 (legacy) — BSP/M5Unified auto-detect.
+- Camera **SC2356** via MIPI-CSI; audio **ES8388** + **ES7210** AEC dual-mic path.
+- **Soft shutdown** before power cut (double-press power); if abrupt loss, **wait 5s** before reboot (BMI270 rail fault).
+- Tab5 **SDIO2 pins** for C6: CLK=12, CMD=13, D0=11, D1=10, D2=9, D3=8, RST=15.
+
+## NEVER
+
+- `#include` / init `esp_wifi` on P4 without hosted transport up.
+- Abrupt battery pull or hard power kill without shutdown sequence.
+- Assume EV-board default SDIO pins — Tab5 uses **SDIO2** mapping (see skill).
+- Skip `M5.begin()` / BSP init before display or expander (PI4IOE5V6408) access.
+
+## Docs
+
+- Hardware: https://docs.m5stack.com/en/core/Tab5
+- BSP: https://components.espressif.com/components/espressif/m5stack_tab5

@@ -1,0 +1,16 @@
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+firmware/**/build/
+vendor/
+.zig-cache/
+zig-out/
+zig-cache/
+node_modules/
+.swarm/
+.claude/
+.claude-flow/
+.evolver/
+ruvector.db

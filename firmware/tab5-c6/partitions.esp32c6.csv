@@ -1,0 +1,12 @@
+# ESP-IDF Partition Table
+# Name,   Type, SubType, Offset,  Size,   Flags
+nvs,      data, nvs,     0x9000,  16K,
+otadata,  data, ota,     0xd000,  8K,
+phy_init, data, phy,     0xf000,  4K,
+ota_0,    app,  ota_0,   0x10000, 1920K,
+ota_1,    app,  ota_1,   0x1f0000,1920K,
+# ZBOSS coordinator NVRAM: network key, TC link keys, address map, bindings.
+# Without these the Zigbee network re-forms on every C6 reboot and every
+# paired device is orphaned. Never erase casually (idf.py erase-flash wipes it).
+zb_storage,data, fat,    0x3d0000,16K,
+zb_fct,   data, fat,     0x3d4000,1K,

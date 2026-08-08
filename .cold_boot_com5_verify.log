@@ -1,0 +1,277 @@
+
+rst:0x17 (CHIP_USB_UART_RESET),boot:0x20c (SPI_FAST_FLASH_BOOT)
+Core0 Saved PC:0x4ff0872e
+Core1 Saved PC:0x4ff0872e
+SPI mode:DIO, clock div:2
+load:0x4ff33ce0,len:0x1524
+load:0x4ff29ed0,len:0xef4
+load:0x4ff2cbd0,len:0x3568
+entry 0x4ff29eda
+I (33) boot: ESP-IDF b90730f4 2nd stage bootloader
+I (33) boot: compile time Jun  7 2026 03:43:48
+I (34) boot: Multicore bootloader
+I (35) boot: chip revision: v1.3
+I (36) boot: efuse block revision: v0.3
+I (40) boot.esp32p4: SPI Speed      : 40MHz
+I (44) boot.esp32p4: SPI Mode       : DIO
+I (47) boot.esp32p4: SPI Flash Size : 16MB
+I (51) boot: Enabling RNG early entropy source...
+I (56) boot: Partition Table:
+I (58) boot: ## Label            Usage          Type ST Offset   Length
+I (65) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (71) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (78) boot:  2 factory          factory app      00 00 00010000 00300000
+I (85) boot: End of partition table
+I (88) esp_image: segment 0: paddr=00010020 vaddr=48140020 size=123fe8h (1196008) map
+I (326) esp_image: segment 1: paddr=00134010 vaddr=30100000 size=000b4h (   180) load
+I (328) esp_image: segment 2: paddr=001340cc vaddr=4ff00000 size=0bf4ch ( 48972) load
+I (341) esp_image: segment 3: paddr=00140020 vaddr=48000020 size=1389e0h (1280480) map
+I (590) esp_image: segment 4: paddr=00278a08 vaddr=4ff0bf4c size=0be5ch ( 48732) load
+I (602) esp_image: segment 5: paddr=0028486c vaddr=4ff17e00 size=05d7ch ( 23932) load
+I (608) esp_image: segment 6: paddr=0028a5f0 vaddr=50108080 size=00024h (    36) load
+I (615) boot: Loaded app from partition at offset 0x10000
+I (616) boot: Disabling RNG early entropy source...
+I (629) hex_psram: vendor id    : 0x0d (AP)
+I (629) hex_psram: Latency      : 0x01 (Fixed)
+I (630) hex_psram: DriveStr.    : 0x00 (25 Ohm)
+I (630) hex_psram: dev id       : 0x03 (generation 4)
+I (635) hex_psram: density      : 0x07 (256 Mbit)
+I (639) hex_psram: good-die     : 0x06 (Pass)
+I (643) hex_psram: SRF          : 0x02 (Slow Refresh)
+I (648) hex_psram: BurstType    : 0x00 ( Wrap)
+I (652) hex_psram: BurstLen     : 0x03 (2048 Byte)
+I (657) hex_psram: BitMode      : 0x01 (X16 Mode)
+I (661) hex_psram: Readlatency  : 0x04 (14 cycles@Fixed)
+I (666) hex_psram: DriveStrength: 0x00 (1/1)
+I (670) MSPI Timing: Enter psram timing tuning
+I esp_psram: Found 32MB PSRAM device
+I esp_psram: Speed: 200MHz
+I (1019) mmu_psram: .rodata xip on psram
+I (1200) mmu_psram: .text xip on psram
+I (1203) cpu_start: Multicore app
+I (2112) esp_psram: SPI SRAM memory test OK
+I (2121) cpu_start: GPIO 38 and 37 are used as console UART I/O pins
+I (2122) cpu_start: Pro cpu start user code
+I (2122) cpu_start: cpu freq: 360000000 Hz
+I (2124) app_init: Application information:
+I (2128) app_init: Project name:     modulus_tab5
+I (2132) app_init: App version:      1
+I (2136) app_init: Compile time:     Jun  7 2026 03:43:33
+I (2141) app_init: ELF file SHA256:  ea73b3d65...
+I (2145) app_init: ESP-IDF:          b90730f4
+I (2149) efuse_init: Min chip rev:     v0.0
+I (2153) efuse_init: Max chip rev:     v1.99 
+I (2157) efuse_init: Chip rev:         v1.3
+I (2161) heap_init: Initializing. RAM available for dynamic allocation:
+I (2167) heap_init: At 4FF20480 len 0001AB40 (106 KiB): RETENT_RAM
+I (2173) heap_init: At 4FF3AFC0 len 00004BF0 (18 KiB): RAM
+I (2178) heap_init: At 4FF54020 len 0004BFE0 (303 KiB): RAM
+I (2184) heap_init: At 501080A4 len 00007F5C (31 KiB): RTCRAM
+I (2189) heap_init: At 301000B4 len 00001F4C (7 KiB): SPM
+I (2194) esp_psram: Adding pool of 30272K of PSRAM memory to heap allocator
+I (2201) esp_psram: Adding pool of 29K of PSRAM memory gap generated due to end address alignment of irom to the heap allocator
+I (2212) esp_psram: Adding pool of 47K of PSRAM memory gap generated due to end address alignment of drom to the heap allocator
+I (2224) spi_flash: detected chip: generic
+I (2227) spi_flash: flash io: dio
+I (2248) SD_HOST: src_freq_hz: 160000000
+I (2252) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+I (2258) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+I (2271) H_SDIO_DRV: sdio_data_to_rx_buf_task started
+I (2275) main_task: Started on CPU0
+I (2279) esp_psram: Reserving pool of 32K of internal memory for DMA/internal allocations
+I (2286) main_task: Calling app_main()
+I (2290) modulus_tab5: Modulus Zig 1.1 (ABI epoch 14)
+I (2295) modulus_display: Initializing Tab5 display (BSP + LVGL)
+I (2303) tab5_pi4ioe: WLAN_PWR_EN noted (C6 boot timer started)
+I (2356) tab5_pi4ioe: CHG_EN (E2.P7) -> 1
+I (2356) tab5_pi4ioe: PI4IOE1=0x43 PI4IOE2=0x44 ready
+I (2356) LVGL: Starting LVGL task
+I (2358) M5Stack Tab5: MIPI DSI PHY Powered on
+I (2362) M5Stack Tab5: Install MIPI DSI LCD control panel
+I (2866) M5Stack Tab5: Discovered board version 2 (LCD ST7123, Touch ST7123)
+I (2866) st7123: version: 1.0.2
+W (3123) st7123: The 36h command has been used and will be overwritten by external initialization sequence
+I (3143) M5Stack Tab5: Display initialized with resolution 720x1280
+I (3190) ST7123: Firmware version: 3(1.71.1.3), Max.X: 720, Max.Y: 1280, Max.Touchs: 10
+I (3191) ST7123: Touch panel create success, version: 1.0.2
+I (3193) M5Stack Tab5: Setting LCD backlight: 100%
+I (3197) M5Stack Tab5: Setting LCD backlight: 100%
+I (3202) modulus_display: Display ready (stripe=120 lines, rotation=90°)
+I (3214) M5Stack Tab5: Setting LCD backlight: 100%
+I (3214) modulus_i18n: Locale: English
+W (3216) i2s_common: dma frame num is adjusted to 256 to align the dma buffer with 64, bufsize = 512
+W (3225) i2s_common: dma frame num is adjusted to 256 to align the dma buffer with 64, bufsize = 512
+I (3248) ES7210: Work in Slave mode
+I (3255) ES7210: Enable ES7210_INPUT_MIC1
+I (3257) ES7210: Enable ES7210_INPUT_MIC2
+I (3265) modulus_audio: Audio ready vol=60% mic=50 tone=0
+I (3265) temperature_sensor: Range [20°C ~ 100°C], error < 2°C
+I (3267) modulus_battery: INA226 ready, bus voltage: 1.04V
+I (3270) tab5_pi4ioe: CHG_EN (E2.P7) -> 1
+I (3275) modulus_battery: Battery HAL init (warn=15%)
+I (3278) modulus_mbus: Bus map: internal I2C1 SCL32/SDA31, Port A I2C0 G53/G54, rear=internal
+I (3287) modulus_storage: Storage HAL init
+W (3291) M5Stack Tab5: Warning: Long filenames on SD card are disabled in menuconfig!
+I (3298) sdmmc_periph: SDMMC host controller already created, returning existing handle
+I (3350) modulus_storage: SD mounted at /sdcard
+I (3350) modulus_rtc: Timezone: UTC (UTC0)
+I (3351) rx8130: battery backup CTRL1=0x30
+I (3352) modulus_rtc: System time from RTC: 2026-07-07 03:40:15
+I (3357) modulus_rtc: RX8130 ready
+I (3360) modulus_security: Security init (PIN none)
+I (3365) tab5_pi4ioe: EXT5V_EN (E1.P2) -> 1
+I (3368) tab5_pi4ioe: USB5V_EN (E2.P3) -> 0
+I (3372) tab5_pi4ioe: CHG_EN (E2.P7) -> 1
+I (3376) modulus_power: Rails applied ext5v=1 usb5v=0 chg_en=1
+I (3381) modulus_wakeup: PMIC wake path: BMI270/RX8130 INT -> E_TRG (no ESP GPIO)
+I (3389) modulus_power: Power init mode=0 ds_to=120s
+I (3394) modulus_serial: Opened RS-485 @ 115200 baud (8N1)
+I (3394) modulus_serial: RX task started on UART1 (pri 6)
+I (3398) modulus_imu: IMU init (wake_motion=0)
+I (3408) tab5_pi4ioe: WLAN_PWR_EN (E2.P0) -> 1
+I (3412) tab5_pi4ioe: C6 SDIO: wait 2891 ms (1109 ms since WLAN_PWR_EN)
+I (6309) transport: Attempt connection with slave: retry[0]
+W (6310) H_SDIO_DRV: Reset slave using GPIO[15]
+I (6310) os_wrapper_esp: GPIO [15] configured
+I (8332) sdio_wrapper: SDIO master: Slot 1, Data-Lines: 4-bit Freq(KHz)[40000 KHz]
+I (8332) sdio_wrapper: GPIOs: CLK[12] CMD[13] D0[11] D1[10] D2[9] D3[8] Slave_Reset[15]
+I (8336) sdio_wrapper: Queues: Tx[20] Rx[20] SDIO-Rx-Mode[1]
+E (8368) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (8368) sdio_wrapper: sdmmc_card_init failed
+E (8496) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (8496) sdio_wrapper: sdmmc_card_init failed
+E (8624) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (8624) sdio_wrapper: sdmmc_card_init failed
+E (8752) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (8752) sdio_wrapper: sdmmc_card_init failed
+E (8880) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (8880) sdio_wrapper: sdmmc_card_init failed
+E (9008) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (9008) sdio_wrapper: sdmmc_card_init failed
+E (9136) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (9136) sdio_wrapper: sdmmc_card_init failed
+E (9264) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (9264) sdio_wrapper: sdmmc_card_init failed
+E (9392) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (9392) sdio_wrapper: sdmmc_card_init failed
+E (9520) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (9520) sdio_wrapper: sdmmc_card_init failed
+E (9648) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (9648) sdio_wrapper: sdmmc_card_init failed
+E (9776) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (9776) sdio_wrapper: sdmmc_card_init failed
+E (9904) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (9904) sdio_wrapper: sdmmc_card_init failed
+E (10032) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (10032) sdio_wrapper: sdmmc_card_init failed
+E (10160) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (10160) sdio_wrapper: sdmmc_card_init failed
+E (10261) H_SDIO_DRV: card init failed
+E (10261) transport: ensure_slave_bus_ready failed
+ESP_ERROR_CHECK_WITHOUT_ABORT failed: esp_err_t 0xffffffff (ESP_FAIL) at 0x48017a74
+file: "./managed_components/espressif__esp_hosted/host/api/src/esp_hosted_api.c" line 179
+func: esp_hosted_reconfigure
+expression: transport_drv_reconfigure()
+E (10279) H_API: ESP-Hosted link not yet up
+W (10283) wireless_shim: esp_wifi_init attempt 1: ESP_FAIL
+I (11788) transport: Attempt connection with slave: retry[0]
+W (11788) H_SDIO_DRV: Reset slave using GPIO[15]
+W (11790) gpio: conflict found for GPIO[15]
+I (13814) sdio_wrapper: SDIO master: Slot 1, Data-Lines: 4-bit Freq(KHz)[40000 KHz]
+I (13814) sdio_wrapper: GPIOs: CLK[12] CMD[13] D0[11] D1[10] D2[9] D3[8] Slave_Reset[15]
+I (13818) sdio_wrapper: Queues: Tx[20] Rx[20] SDIO-Rx-Mode[1]
+E (13850) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (13850) sdio_wrapper: sdmmc_card_init failed
+E (13978) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (13978) sdio_wrapper: sdmmc_card_init failed
+E (14106) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (14106) sdio_wrapper: sdmmc_card_init failed
+E (14234) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (14234) sdio_wrapper: sdmmc_card_init failed
+E (14362) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (14362) sdio_wrapper: sdmmc_card_init failed
+E (14490) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (14490) sdio_wrapper: sdmmc_card_init failed
+E (14618) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (14618) sdio_wrapper: sdmmc_card_init failed
+E (14746) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (14746) sdio_wrapper: sdmmc_card_init failed
+E (14874) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (14874) sdio_wrapper: sdmmc_card_init failed
+E (15002) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (15002) sdio_wrapper: sdmmc_card_init failed
+E (15130) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (15130) sdio_wrapper: sdmmc_card_init failed
+E (15258) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (15258) sdio_wrapper: sdmmc_card_init failed
+E (15386) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (15386) sdio_wrapper: sdmmc_card_init failed
+E (15514) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (15514) sdio_wrapper: sdmmc_card_init failed
+E (15642) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (15642) sdio_wrapper: sdmmc_card_init failed
+E (15743) H_SDIO_DRV: card init failed
+E (15743) transport: ensure_slave_bus_ready failed
+ESP_ERROR_CHECK_WITHOUT_ABORT failed: esp_err_t 0xffffffff (ESP_FAIL) at 0x48017a74
+file: "./managed_components/espressif__esp_hosted/host/api/src/esp_hosted_api.c" line 179
+func: esp_hosted_reconfigure
+expression: transport_drv_reconfigure()
+E (15761) H_API: ESP-Hosted link not yet up
+W (15765) wireless_shim: esp_wifi_init attempt 2: ESP_FAIL
+I (17270) transport: Attempt connection with slave: retry[0]
+W (17270) H_SDIO_DRV: Reset slave using GPIO[15]
+I (17270) os_wrapper_esp: GPIO [15] configured
+W (17272) gpio: conflict found for GPIO[15]
+I (19296) sdio_wrapper: SDIO master: Slot 1, Data-Lines: 4-bit Freq(KHz)[40000 KHz]
+I (19296) sdio_wrapper: GPIOs: CLK[12] CMD[13] D0[11] D1[10] D2[9] D3[8] Slave_Reset[15]
+I (19300) sdio_wrapper: Queues: Tx[20] Rx[20] SDIO-Rx-Mode[1]
+E (19332) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (19332) sdio_wrapper: sdmmc_card_init failed
+E (19460) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (19460) sdio_wrapper: sdmmc_card_init failed
+E (19588) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (19588) sdio_wrapper: sdmmc_card_init failed
+E (19716) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (19716) sdio_wrapper: sdmmc_card_init failed
+E (19844) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (19844) sdio_wrapper: sdmmc_card_init failed
+E (19972) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (19972) sdio_wrapper: sdmmc_card_init failed
+E (20100) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (20100) sdio_wrapper: sdmmc_card_init failed
+E (20228) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (20228) sdio_wrapper: sdmmc_card_init failed
+E (20356) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (20356) sdio_wrapper: sdmmc_card_init failed
+E (20484) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (20484) sdio_wrapper: sdmmc_card_init failed
+E (20612) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (20612) sdio_wrapper: sdmmc_card_init failed
+E (20740) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (20740) sdio_wrapper: sdmmc_card_init failed
+E (20868) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (20868) sdio_wrapper: sdmmc_card_init failed
+E (20996) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (20996) sdio_wrapper: sdmmc_card_init failed
+E (21124) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+E (21124) sdio_wrapper: sdmmc_card_init failed
+E (21225) H_SDIO_DRV: card init failed
+E (21225) transport: ensure_slave_bus_ready failed
+ESP_ERROR_CHECK_WITHOUT_ABORT failed: esp_err_t 0xffffffff (ESP_FAIL) at 0x48017a74
+file: "./managed_components/espressif__esp_hosted/host/api/src/esp_hosted_api.c" line 179
+func: esp_hosted_reconfigure
+expression: transport_drv_reconfigure()
+E (21243) H_API: ESP-Hosted link not yet up
+W (21247) wireless_shim: esp_wifi_init attempt 3: ESP_FAIL
+E (22752) wireless_shim: esp_wifi_init: ESP_FAIL
+I (22752) modulus_ui: UI manager init
+I (22752) modulus_ui: Show boot screen
+W (22993) modulus_tab5: Wireless not ready — reflash C6 slave on COM6 if SDIO fails
+I (22993) modulus_tab5: Core 0 evt_dispatch + Core 1 sys_task running
+I (22998) I2S_IF: Paired data: 0x4ff5cbc4, current mode: playback, paired in_enable: 0, paired out_enable: 0
+I (23006) I2S_IF: STD: TX, data_bit: 16, slot_bit: 16, ws_width: 16, slot_mode: STEREO, slot_mask: 0x3
+I (23014) I2S_IF: STD: TX, sample_rate_hz: 48000, mclk_multiple: 256, clk_src: 0
+I (23027) ES8388: Start on mode:2
+I (23029) Adev_Codec: Open codec device OK
+I (25755) ui_boot: Boot complete — loading dashboard
+I (25755) modulus_ui: Show dashboard

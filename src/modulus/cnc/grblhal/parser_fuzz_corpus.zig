@@ -1,0 +1,50 @@
+//! grblHAL parser fuzz corpus — real status/bracket lines from `parser_tests.zig` and field edge cases.
+
+pub const lines = [_][]const u8{
+    // Status reports (parser_tests)
+    "<Idle|MPos:1.0,2.0,3.0|FS:500,12000>",
+    "<Run|MPos:10.0,20.0,5.0|WCO:1.0,2.0,3.0|FS:500,0>",
+    "<Idle|WPos:9.0,18.0,2.0|WCO:1.0,2.0,3.0>",
+    "<Door:1|MPos:0,0,0>",
+    "<Check|MPos:0,0,0>",
+    "<Sleep|MPos:0,0,0>",
+    "<Tool|MPos:0,0,0>",
+    "<Run|MPos:0,0,0|FS:500,12000,11950|Bf:30,512|Ln:42|WCS:G55|H:1,7|Pn:XYZ>",
+    "<Idle|MPos:0,0,0|WCS:G59.3>",
+    "<Tool|MPos:0,0,0|A:ST>",
+    "<Idle|MPos:0,0,0|SD:1|D:1|Sc:XY|TLR:1|In:-3>",
+    "<Run|MPos:0,0,0|SD:45.5,job.nc>",
+    "<Run|Hold:1|MPos:0,0,0|WCO:1,2,3>",
+    // Substates and motion modes
+    "<Hold:0|MPos:0,0,0|Ov:100,100,100>",
+    "<Jog|MPos:1.5,2.5,3.5|FS:100,0>",
+    "<Alarm:3|MPos:0,0,0>",
+    "<Run|Door:2|MPos:0,0,0>",
+    "<Idle|MPos:0,0,0,0,0,0|MPG:1>",
+    "<Idle|MPos:0,0,0|FW:GrblHAL 1.1f>",
+    // Bracket / info lines
+    "[MSG:Probe triggered]",
+    "[GC:G0 G54 G17 G21 G90 M5 M9 T3 F500 S12000]",
+    "[OPT:VB,SD,WIFI]",
+    "[NEWOPT:ENUMS,SD,WIFI]",
+    "[AXS:XYZABCUV]",
+    // Session tokens
+    "ok",
+    "error:1",
+    "error:8",
+    "ALARM:1",
+    "ALARM:2",
+    "GrblHAL 1.1f ['$' for help]",
+    "$22=1",
+    "$130=200.000",
+    // Edge / malformed (must not panic)
+    "",
+    "<Idle",
+    "Idle>",
+    "<>",
+    "[MSG:",
+    "ok\n",
+    "\r\n",
+    "<Idle|MPos:not,a,number|FS:x,y>",
+    "<Run|MPos:0,0,0|SD:Pending>",
+};
