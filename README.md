@@ -1,6 +1,6 @@
 # Modulus Firmware
 
-**Version:** 0.1.0 (beta)  
+**Version:** 2.0.0  
 **Author:** D. McLean / BufferRoot  
 **Platform:** M5Stack Tab5 (ESP32-P4 + ESP32-C6)  
 **Stack:** Zig 0.16 + ESP-IDF 6  

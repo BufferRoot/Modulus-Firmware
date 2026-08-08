@@ -1,7 +1,7 @@
 # Modulus — The Ultimate Universal Smart CNC Pendant
 
 > **Hackster:** [Modulus pendant](https://www.hackster.io/BufferRoot/modulus-the-ultimate-universal-smart-cnc-pendant-2587ed) · **Contest:** [M5Stack GIC 2026](https://m5stack.com/global-innovation-contest-2026)  
-> **Authors:** D. McLean / BufferRoot (solo) · **Firmware:** v0.1.0 beta · **Repo:** [github.com/BufferRoot/Modulus-Firmware](https://github.com/BufferRoot/Modulus-Firmware) · **License:** [TBD]
+> **Authors:** D. McLean / BufferRoot (solo) · **Firmware:** v2.0.0 · **Repo:** [github.com/BufferRoot/Modulus-Firmware](https://github.com/BufferRoot/Modulus-Firmware) · **License:** [TBD]
 
 **Submit:** Google Form by **Aug 7, 2026 11:59 PM PST**. Paste checklist: Appendix C.
 
