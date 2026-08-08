@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/modulus-firmware-hero.png" alt="Modulus Firmware — Tab5 CNC pendant" width="720">
+</p>
+
 # Modulus Firmware
 
 **Version:** 2.0.0  
@@ -133,6 +137,7 @@ firmware/nanoh2/     H2 Zigbee coordinator (ZBOSS)
 firmware/s3-bridge/  ESP-NOW → UART bridge
 cad/                 STL + CAD (enclosure / mounts)
 schematics/          Schematics + wiring diagrams
+assets/              README media (hero image)
 scripts/             Build / flash helpers
 tools/               NVS manifest generator (used by zig build)
 LICENSE              MIT
