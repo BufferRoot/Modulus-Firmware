@@ -128,9 +128,11 @@ Pendant E-Stop is a **convenience layer**, not a safety-rated cutoff. It rides t
 ```
 src/modulus/         Zig: state, jog math, cnc_proto, envelope, ABI
 firmware/tab5/       P4 app: IDF/BSP/LVGL C shims + modulus_zig
+firmware/tab5-c6/    C6 ESP-Hosted wireless slave
 firmware/nanoh2/     H2 Zigbee coordinator (ZBOSS)
 firmware/s3-bridge/  ESP-NOW → UART bridge
-scripts/             Build / flash PowerShell
+scripts/             Build / flash helpers
+tools/               NVS manifest generator (used by zig build)
 LICENSE              MIT
 ```
 

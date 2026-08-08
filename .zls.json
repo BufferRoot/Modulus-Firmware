@@ -1,8 +1,0 @@
-{
-  "build_on_save_step": "test",
-  "warn_style": true,
-  "semantic_tokens": "partial",
-  "zig_exe_path": "C:/Users/BEAST MODE/AppData/Local/Microsoft/WinGet/Links/zig.exe",
-  "$schema": "https://raw.githubusercontent.com/zigtools/zls/master/schema.json",
-  "enable_build_on_save": true
-}

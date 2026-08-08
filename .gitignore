@@ -13,9 +13,11 @@ vendor/
 zig-out/
 zig-pkg/
 
-# Node / local tooling
+# Node / local tooling (not required to build/flash)
 node_modules/
 **/node_modules/
+package.json
+**/package.json
 package-lock.json
 **/package-lock.json
 .fallowrc.json
@@ -25,7 +27,7 @@ p.status.wcs
 *.err
 build-audit-*
 
-# Agent / IDE local state (not product firmware)
+# Agent / IDE / docs (not required to use firmware)
 .agents/
 .cursor/
 .claude/
@@ -36,12 +38,29 @@ build-audit-*
 .token-savior-cache.json
 ruvector.db
 memory/
+docs/
 CLAUDE.md
+MEMORY.md
+.contextignore
+.zls.json
+.env.example
+
+# Dev-only scripts (regenerate / soak / MCP)
+scripts/__pycache__/
+scripts/audit_*.ps1
+scripts/gen_phosphor_icons.mjs
+scripts/m3_ux_*.py
+scripts/monitor_*.py
+scripts/setup_*.ps1
+scripts/soak_*.ps1
+scripts/split_*.py
+scripts/tmp_*.bat
+tools/mmbp_bridge/
+tools/gen_zb_devdb.py
 
 # Env / secrets
 .env
 .env.*
-!.env.example
 
 # Logs / capture dumps
 *.log
@@ -58,7 +77,3 @@ Thumbs.db
 *.swp
 .vscode/
 .idea/
-
-# Internal session notes
-MEMORY.md
-
