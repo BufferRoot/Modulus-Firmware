@@ -1,19 +1,46 @@
-# CAD / STL
+# CAD — Tab5 enclosure
 
-Enclosure and mechanical parts for Modulus (Tab5 shell, wheel mount, battery bay, etc.).
+Mechanical CAD and printable parts for the Modulus Tab5 pendant shell (covers, buttons, battery bay / wheel mount geometry).
 
-**Print:** ABS or ASA recommended.
+**Source of truth:** `M5_TAB5_rev2.step`. Export STLs from this STEP when regenerating prints; do not treat screenshots as dimensional references.
 
-| File | Description |
-|------|-------------|
-| `M5_TAB5_rev2.step` | CAD source (STEP) |
+## Print notes
+
+| Parameter | Guidance |
+|-----------|----------|
+| Material | **ABS** or **ASA** (heat / UV resistance on pendant) |
+| Orientation | Match mating faces; keep button travel axes vertical when possible |
+| Fasteners | **6×** 15 mm socket screws |
+| Fit | Dry-fit covers before final fasteners; leave clearance for Tab5 PCB and connectors |
+
+## Inventory
+
+### Source
+
+| File | Role |
+|------|------|
+| `M5_TAB5_rev2.step` | Canonical CAD (STEP, rev2) |
+
+### Printables (STL)
+
+| File | Part |
+|------|------|
 | `Front Cover.stl` | Front cover |
-| `BACK COVER.stl` | Back cover |
-| `Back Button.stl` | Back button |
+| `BACK COVER.stl` | Rear cover |
+| `Back Button.stl` | Rear button |
 | `Side Button.stl` | Side button |
-| `Screenshot 2026-08-07 214138.png` | Enclosure / CAD view |
-| `Screenshot 2026-08-07 214200.png` | Enclosure / CAD view |
-| `Screenshot 2026-08-07 214233.png` | Enclosure / CAD view |
-| `Screenshot 2026-08-07 214254.png` | Enclosure / CAD view |
-| `Screenshot 2026-08-07 214322.png` | Enclosure / CAD view |
-| `Screenshot 2026-08-07 214335.png` | Enclosure / CAD view |
+
+### Reference captures
+
+Assembly / CAD screenshots for visual check only (filenames are export timestamps).
+
+| File |
+|------|
+| `Screenshot 2026-08-07 214138.png` |
+| `Screenshot 2026-08-07 214200.png` |
+| `Screenshot 2026-08-07 214233.png` |
+| `Screenshot 2026-08-07 214254.png` |
+| `Screenshot 2026-08-07 214322.png` |
+| `Screenshot 2026-08-07 214335.png` |
+
+Wiring and interconnect: see [schematics/README.md](../schematics/README.md).
