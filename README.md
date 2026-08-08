@@ -269,3 +269,5 @@ Re-pack local builds into release zips: `.\scripts\package_flash_images.ps1`.
 ## BOM (short)
 
 Tab5 · ExtEncoder + wheel · industrial NO E-Stop · Stamp NanoH2 · ESP32-S3 cabinet bridge · NP-F pack(s) · optional COMMU Module Extend.
+
+Mechanical files: [`cad/`](cad/) · Wiring / schematics: [`schematics/`](schematics/).
