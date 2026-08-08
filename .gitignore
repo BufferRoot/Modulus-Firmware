@@ -15,7 +15,15 @@ zig-pkg/
 
 # Node / local tooling
 node_modules/
+**/node_modules/
 package-lock.json
+**/package-lock.json
+.fallowrc.json
+.tmp_*
+p.status.wcs
+{s}
+*.err
+build-audit-*
 
 # Agent / IDE local state (not product firmware)
 .agents/
