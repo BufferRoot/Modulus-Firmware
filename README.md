@@ -170,5 +170,3 @@ Then: **Settings → Wireless → ESP-NOW → S3 MAC**, lock channel **1 / 6 / 1
 ## BOM (short)
 
 Tab5 · ExtEncoder + wheel · industrial NO E-Stop · Stamp NanoH2 · ESP32-S3 cabinet bridge · NP-F pack(s) · optional COMMU Module Extend.
-
-Full write-up, judging map, and media checklist: `Modulus_Hackster_Documentation.md`.
