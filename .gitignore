@@ -11,17 +11,46 @@ vendor/
 # Zig
 .zig-cache/
 zig-out/
+zig-pkg/
 
-# Per-project agent state (regenerate locally)
-.swarm/
+# Node / local tooling
+node_modules/
+package-lock.json
+
+# Agent / IDE local state (not product firmware)
+.agents/
+.cursor/
 .claude/
 .claude-flow/
 .evolver/
-ruvector.db
-
-# Token Savior cache
-.token-savior-cache.json
-
-# Env
-.env
 .fallow/
+.swarm/
+.token-savior-cache.json
+ruvector.db
+memory/
+CLAUDE.md
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs / capture dumps
+*.log
+*.log.err
+.cold_boot*.log
+monitor*.log
+flash-*.log
+build-*.log
+build-*.err
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+
+# Internal session notes
+MEMORY.md
+

@@ -1,3 +1,0 @@
-Executing action: monitor
-Running idf_monitor in directory 'C:\Users\BEAST MODE\Desktop\Modulus Convert to ZIG\firmware\tab5'
-Executing "C:\Espressif\python_env\idf6.2_py3.15_env\Scripts\python.exe C:\Espressif\frameworks\esp-idf-v6.0.1\tools/idf_monitor.py -p COM5 -b 115200 --toolchain-prefix riscv32-esp-elf- --target esp32p4 --revision 0 --decode-panic backtrace 'C:\Users\BEAST MODE\Desktop\Modulus Convert to ZIG\firmware\tab5\build\modulus_tab5.elf' 'C:\Users\BEAST MODE\Desktop\Modulus Convert to ZIG\firmware\tab5\build\bootloader\bootloader.elf' --force-color -m 'C:\Espressif\python_env\idf6.2_py3.15_env\Scripts\python.exe' 'C:\Espressif\frameworks\esp-idf-v6.0.1\tools\idf.py' '-p' 'COM5'"...
