@@ -20,4 +20,13 @@ menu "Modulus Tab5"
             CONFIG_ESP_HOSTED_SDIO_RESET_DELAY_MS must match this margin.
             Increase (5500 ms typical) if sdmmc_card_init returns 0x107.
 
+    config MODULUS_ZIG_UI_ENGINE
+        bool "Zig UI engine owns scanout (omit LVGL widget UI)"
+        default y
+        help
+            When enabled, Core-0 zig_ui task drives MIPI via Zig Engine and
+            the LVGL widget tree (ui_dashboard / ui_settings*) is not compiled.
+            BSP still starts a thin LVGL port for panel bind. Set n for the
+            legacy LVGL UI lab build.
+
 endmenu

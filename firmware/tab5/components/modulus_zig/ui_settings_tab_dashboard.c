@@ -281,6 +281,8 @@ static void dashboard_reset_cb(void)
     modulus_nvs_set_u8("cnc_contpct", 100);
     modulus_nvs_set_u8("cnc_stepacc", 0);
     modulus_nvs_set_u8("cnc_mpgpol", 0);
+    modulus_nvs_set_u8("jog_coal_ms", 20);
+    modulus_nvs_set_u8("jog_pend_max", 32);
     modulus_nvs_set_str("cnc_incr", "0.001,0.01,0.1,1.0");
     modulus_nvs_set_str("cnc_macro", "");
     for (int i = 0; i < 4; i++) {

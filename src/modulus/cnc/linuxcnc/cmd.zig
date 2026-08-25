@@ -40,10 +40,6 @@ pub fn setModeAuto(buf: []u8) usize {
     return fmtLen(buf, "set mode auto\n", .{});
 }
 
-pub fn setModeMdi(buf: []u8) usize {
-    return fmtLen(buf, "set mode mdi\n", .{});
-}
-
 pub fn setStep(buf: []u8) usize {
     return fmtLen(buf, "set step\n", .{});
 }

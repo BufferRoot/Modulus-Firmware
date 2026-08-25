@@ -49,6 +49,16 @@ pub fn build(b: *std.Build) void {
     modulus_module.addImport("modulus_shims", host_shim_module);
     modulus_module.addImport("nvs_key_manifest", nvs_manifest_module);
 
+    // Host ABI proof: translate real `ui_shim.h` so stub ≠ hand-copied fantasy layout.
+    const translate_ui_shim = b.addTranslateC(.{
+        .root_source_file = b.path("firmware/tab5/components/modulus_zig/include/ui_shim.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    translate_ui_shim.addIncludePath(b.path("firmware/tab5/components/modulus_zig/include"));
+    modulus_module.addImport("ui_shim_hdr", translate_ui_shim.createModule());
+
     const tests = b.addTest(.{
         .root_module = modulus_module,
     });
@@ -165,11 +175,59 @@ pub fn build(b: *std.Build) void {
         run_host_diag.addArgs(args);
     }
 
-    const ci_step = b.step("ci", "Full Zig gate: test + fuzz + translate + tab5-lib + headers + NVS codegen");
+    // Host-first UI engine demo (no LVGL / no firmware). Prove dirty + rotate-on-write.
+    const ui_engine_module = b.createModule(.{
+        .root_source_file = b.path("src/modulus/ui_engine/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const ui_demo_module = b.createModule(.{
+        .root_source_file = b.path("src/modulus/ui_engine/demo_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ui_demo_module.addImport("ui_engine", ui_engine_module);
+    if (target.result.os.tag == .windows) {
+        ui_demo_module.linkSystemLibrary("user32", .{});
+        ui_demo_module.linkSystemLibrary("gdi32", .{});
+    }
+    const ui_demo_exe = b.addExecutable(.{
+        .name = "modulus-ui-demo",
+        .root_module = ui_demo_module,
+    });
+    b.installArtifact(ui_demo_exe);
+
+    const run_ui_demo = b.addRunArtifact(ui_demo_exe);
+    // Window stays open — do not attach to `ci`.
+    if (b.args) |args| {
+        run_ui_demo.addArgs(args);
+    }
+    const ui_demo_step = b.step("ui-demo", "Open host UI-engine window (Esc quit; --bench for headless)");
+    ui_demo_step.dependOn(&run_ui_demo.step);
+
+    const run_ui_bench = b.addRunArtifact(ui_demo_exe);
+    run_ui_bench.addArg("--bench");
+    const ui_bench_step = b.step("ui-demo-bench", "Headless UI-engine dirty-path proof");
+    ui_bench_step.dependOn(&run_ui_bench.step);
+
+    // The Noto bake stops at 0x7E and the Montserrat LVGL fonts are ASCII too,
+    // so a stray em dash or ellipsis paints a blank cell at full advance width.
+    const ui_ascii_step = b.step("ui-ascii", "Reject non-ASCII drawn literals (C shims + Zig UI engine)");
+    const run_ui_ascii = b.addSystemCommand(&.{
+        "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File",      b.pathFromRoot("scripts/check_ui_ascii.ps1"),
+    });
+    run_ui_ascii.has_side_effects = true;
+    ui_ascii_step.dependOn(&run_ui_ascii.step);
+
+    const ci_step = b.step("ci", "Full Zig gate: test + fuzz + translate + tab5-lib + headers + NVS codegen + UI ASCII");
     ci_step.dependOn(&run_tests.step);
     ci_step.dependOn(&run_fuzz.step);
     ci_step.dependOn(&translate_shims.step);
     ci_step.dependOn(&tab5_install.step);
     ci_step.dependOn(install_headers_step);
     ci_step.dependOn(&run_gen_nvs.step);
+    ci_step.dependOn(&run_ui_bench.step);
+    // PowerShell-only gate; keep `ci` usable on non-Windows hosts.
+    if (@import("builtin").os.tag == .windows) ci_step.dependOn(&run_ui_ascii.step);
 }

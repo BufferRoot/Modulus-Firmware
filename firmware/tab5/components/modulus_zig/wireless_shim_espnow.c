@@ -43,6 +43,7 @@ static volatile bool s_peer_wait_armed;
 static bool espnow_add_peer_wait(const uint8_t mac[6], uint8_t ch, bool encrypt, uint32_t timeout_ms);
 
 static bool espnow_apply_bridge_peer(void);
+static void schedule_bridge_reapply(void);
 static void espnow_scan_stop(void);
 static void saved_add(const char *norm);
 
@@ -82,10 +83,11 @@ static void espnow_sync_cnc_transport(void)
     if (!s_espnow_on || !espnow_cnc_transport_selected()) {
         return;
     }
+    /* Always full Zig reinit (Core 0 worker). Reapply-only left half-open
+     * transports: Session stuck on Connecting after reboot / peer reselect. */
     if (modulus_espnow_transport_is_open()) {
-        modulus_espnow_debug_event("sync", "reapply peer (transport live)");
-        modulus_espnow_transport_reapply_peer();
-        return;
+        modulus_espnow_debug_event("sync", "stop then reinit (was open)");
+        modulus_espnow_transport_stop();
     }
     modulus_espnow_debug_event("sync", "transport reinit (cnc_conn=espnow)");
     modulus_zig_transport_reinit();
@@ -209,12 +211,17 @@ static void espnow_stack_evt(uint8_t evt, const uint8_t *payload, uint16_t len, 
             if (s_peer_sem) {
                 xSemaphoreGive(s_peer_sem);
             }
+        } else {
+            schedule_bridge_reapply();
         }
         break;
     case ESPNOW_EVT_SEND_FAIL:
         /* reason=0x01 is MAC-layer ACK miss (PM/radio), not a stale peer table entry. */
         if (!payload || len < 7 || payload[6] != 0x01) {
             s_bridge_ok = false;
+            if (!s_peer_wait_armed) {
+                schedule_bridge_reapply();
+            }
         }
         if (payload && len >= 10) {
             modulus_espnow_debug_event("bridge",
@@ -304,7 +311,8 @@ static bool espnow_apply_bridge_peer(void)
     modulus_espnow_debug_event("bridge", "apply peer %s ch%u", mac_str, (unsigned)ch);
 
     s_bridge_ok = false;
-    if (!espnow_add_peer_wait(mac, ch, false, 1500)) {
+    /* Saved channel + MAC: short peer ACK wait (was 1500 ms). */
+    if (!espnow_add_peer_wait(mac, ch, false, 600)) {
         modulus_espnow_debug_event("bridge", "add_peer timeout/fail");
         ESP_LOGW(TAG, "C6 add_peer failed for %s ch%u", mac_str, (unsigned)ch);
         return false;
@@ -332,8 +340,13 @@ static void espnow_scan_stop(void)
 bool modulus_wireless_espnow_enable(void)
 {
     if (!modulus_wireless_ready() || !modulus_wireless_ensure_wifi_stack()) {
-        modulus_espnow_debug_event("radio", "enable fail (wifi stack)");
-        return false;
+        /* Match LVGL toggle: wake C6 then retry wifi stack (P4-only reboot common). */
+        if (!modulus_wireless_wake_coprocessor() ||
+            !modulus_wireless_ready() ||
+            !modulus_wireless_ensure_wifi_stack()) {
+            modulus_espnow_debug_event("radio", "enable fail (wifi stack)");
+            return false;
+        }
     }
     {
         /* The bridge filters/sends to a stored Tab5 MAC. If the C6 STA MAC here
@@ -352,6 +365,11 @@ bool modulus_wireless_espnow_enable(void)
     modulus_espnow_debug_event("radio", "enabled");
     ESP_LOGI(TAG, "ESP-NOW radio enabled");
     return true;
+}
+
+int modulus_wireless_espnow_enable_zi(void)
+{
+    return modulus_wireless_espnow_enable() ? 1 : 0;
 }
 
 void modulus_wireless_espnow_disable(void)
@@ -845,25 +863,66 @@ static bool boot_reconnect_once(const char *phase)
     } else {
         modulus_wireless_espnow_apply_bridge_peer();
     }
-    if (modulus_nvs_get_u8("cnc_conn", 4) == 0 && !modulus_espnow_transport_is_open()) {
-        modulus_espnow_debug_event("boot", "reconnect (%s): transport reinit", phase);
-        espnow_sync_cnc_transport();
+    if (modulus_nvs_get_u8("cnc_conn", 4) == 0) {
+        if (!modulus_espnow_transport_is_open()) {
+            modulus_espnow_debug_event("boot", "reconnect (%s): transport reinit", phase);
+            espnow_sync_cnc_transport();
+            return false;
+        }
+        /* Transport open is enough — do not require bridge_ok here or retries
+         * thrash stop/reinit while peer handshake finishes. */
+        return true;
     }
     return modulus_wireless_espnow_bridge_ready() ||
-        modulus_wireless_espnow_is_enabled();
+           modulus_wireless_espnow_is_enabled();
 }
+
+/* Fast reconnect after PEER_FAIL / SEND_FAIL — avoid 2 s boot cadence. */
 
 static void deferred_boot_reconnect_task(void *arg)
 {
     (void)arg;
-    for (int attempt = 1; attempt <= 8; attempt++) {
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        modulus_espnow_debug_event("boot", "reconnect retry %d/8", attempt);
+    /* Front-load: 250 ms, then 400 ms × 9 (was 2 s × 8 = up to 16 s). */
+    static const uint16_t k_delays_ms[] = {250, 400, 400, 400, 400, 600, 600, 800, 800, 1000};
+    for (int attempt = 0; attempt < (int)(sizeof(k_delays_ms) / sizeof(k_delays_ms[0]));
+         attempt++) {
+        vTaskDelay(pdMS_TO_TICKS(k_delays_ms[attempt]));
+        modulus_espnow_debug_event("boot", "reconnect retry %d/%d", attempt + 1,
+                                   (int)(sizeof(k_delays_ms) / sizeof(k_delays_ms[0])));
         if (boot_reconnect_once("retry")) {
             break;
         }
     }
     vTaskDelete(NULL);
+}
+
+static void deferred_bridge_reapply_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(80));
+    if (boot_reconnect_wanted() && s_espnow_on && !s_bridge_ok) {
+        modulus_espnow_debug_event("bridge", "fast reapply");
+        (void)espnow_apply_bridge_peer();
+        if (modulus_nvs_get_u8("cnc_conn", 4) == 0 && !modulus_espnow_transport_is_open()) {
+            espnow_sync_cnc_transport();
+        }
+    }
+    vTaskDelete(NULL);
+}
+
+static void schedule_bridge_reapply(void)
+{
+    static TickType_t s_last;
+    const TickType_t now = xTaskGetTickCount();
+    /* Debounce: at most one reapply every 400 ms. */
+    if ((now - s_last) < pdMS_TO_TICKS(400)) {
+        return;
+    }
+    s_last = now;
+    if (!boot_reconnect_wanted() || !s_espnow_on) {
+        return;
+    }
+    xTaskCreate(deferred_bridge_reapply_task, "espnow_re", 3072, NULL, 3, NULL);
 }
 
 void modulus_wireless_espnow_boot_reconnect(void)

@@ -51,5 +51,5 @@ fn ext5vWasOn() bool {
 
 fn usb5vWasOn() bool {
     const rt = state.rtPtr() orelse return false;
-    return rt.store.getBool(settings_keys.usb5v, false);
+    return rt.store.getBool(settings_keys.usb5v, true);
 }

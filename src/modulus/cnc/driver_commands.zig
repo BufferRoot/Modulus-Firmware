@@ -37,20 +37,27 @@ pub fn cmdHomeAxis(drv: anytype, axis_idx: u8) void {
     if (gating.canSendCommands(drv)) drv.engine.sendHome(letter);
 }
 
-pub fn cmdZeroAxis(drv: anytype, axis_idx: u8) void {
+pub fn cmdZeroAxis(drv: anytype, axis_idx: u8) bool {
     // Match C++ widget_dro: send while linked. Use canSendCommands (not isReady)
     // so MPG / mpg_blocked still zeros — isReady silently no-op'd the DRO buttons.
-    if (!gating.canSendCommands(drv)) return;
-    if (drv.status().state == .disconnected) return;
-    const letter = cnc_state.activeAxisLetter(@enumFromInt(axis_idx)) orelse return;
-    var buf: [24]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "G10 L20 P0 {c}0", .{letter}) catch return;
+    if (!gating.canSendCommands(drv)) return false;
+    if (drv.status().state == .disconnected) return false;
+    const letter = cnc_state.activeAxisLetter(@enumFromInt(axis_idx)) orelse return false;
+    const p = cnc_state.wcsG10P(drv.status().wcs);
+    var buf: [32]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "G10 L20 P{d} {c}0", .{ p, letter }) catch return false;
     driver_ops.sendGcodeClamped(drv, line);
+    return true;
 }
 
-pub fn cmdZeroAll(drv: anytype) void {
-    if (!gating.canSendCommands(drv)) return;
-    driver_ops.sendGcodeClamped(drv, "G10 L20 P0 X0 Y0 Z0");
+pub fn cmdZeroAll(drv: anytype) bool {
+    if (!gating.canSendCommands(drv)) return false;
+    if (drv.status().state == .disconnected) return false;
+    const p = cnc_state.wcsG10P(drv.status().wcs);
+    var buf: [40]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "G10 L20 P{d} X0 Y0 Z0", .{p}) catch return false;
+    driver_ops.sendGcodeClamped(drv, line);
+    return true;
 }
 
 pub fn cycleWcs(drv: anytype) void {

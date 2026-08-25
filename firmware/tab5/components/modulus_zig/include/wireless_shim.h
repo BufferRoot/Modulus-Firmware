@@ -163,7 +163,7 @@ bool modulus_wireless_ble_passkey_confirm(void);
 void modulus_wireless_ble_passkey_cancel(void);
 void modulus_wireless_ble_clear_paired(void);
 
-/* ── Zigbee / Thread (802.15.4 via C6 SDIO; device NVS + scan/control) */
+/* ── Zigbee = NanoH2 UART (ESP32-H2); Thread = C6 SDIO — not the same radio */
 
 #include "wireless_shim_802154.h"
 
@@ -175,6 +175,15 @@ bool modulus_wireless_zigbee_enable(void);
 void modulus_wireless_zigbee_disable(void);
 bool modulus_wireless_thread_enable(void);
 void modulus_wireless_thread_disable(void);
+
+/* Zig freestanding — c_int 0/1 (Zig #35373); wrap bool radio enable/wake. */
+int modulus_wireless_wake_coprocessor_zi(void);
+int modulus_wireless_wifi_enable_zi(void);
+int modulus_wireless_ble_enable_zi(void);
+int modulus_wireless_espnow_enable_zi(void);
+int modulus_wireless_zigbee_enable_zi(void);
+int modulus_wireless_thread_enable_zi(void);
+
 bool modulus_wireless_zigbee_join(void);
 /** True while async join is waiting for hub HUB_STATE. */
 bool modulus_wireless_zigbee_join_pending(void);

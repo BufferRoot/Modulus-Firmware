@@ -70,7 +70,7 @@ pub const Battery = struct {
     charge_enabled: bool = true,
     quick_charge: bool = false,
     ext5v_enabled: bool = true,
-    usb5v_enabled: bool = false,
+    usb5v_enabled: bool = true,
     low_warned: bool = false,
 
     pub fn init(self: *Battery, store: *settings_store.Store) void {
@@ -80,7 +80,7 @@ pub const Battery = struct {
         self.charge_enabled = store.getBool(settings_keys.chg_en, true);
         self.quick_charge = store.getBool(settings_keys.qc, false);
         self.ext5v_enabled = store.getBool(settings_keys.ext5v, true);
-        self.usb5v_enabled = store.getBool(settings_keys.usb5v, false);
+        self.usb5v_enabled = store.getBool(settings_keys.usb5v, true);
         if (build_options.device_nvs) {
             idf_battery_mod.hwInit();
             idf_battery_mod.syncStatus(&self.status);

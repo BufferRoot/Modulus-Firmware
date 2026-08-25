@@ -1,12 +1,17 @@
-#include "ui_settings_priv.h"
-#include "ui_settings_common.h"
-#include "ui_settings_modal_kb.h"
-#include "ui_internal.h"
 #include "nvs_shim.h"
 #include "cnc_cmd_exports.h"
 #include "audio_shim.h"
 #include "shop_recipe.h"
 #include "wireless_shim.h"
+#include "sdkconfig.h"
+#include "ui_internal.h"
+#include "ui_cnc_profiles.h"
+
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
+#include "ui_settings_priv.h"
+#include "ui_settings_common.h"
+#include "ui_settings_modal_kb.h"
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -223,6 +228,8 @@ void modulus_ui_cnc_profile_boot_apply(void)
         apply_blob(blob);
     }
 }
+
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
 
 /* ── Manager modal + rename keyboard ─────────────────────────────── */
 
@@ -465,3 +472,5 @@ void modulus_ui_cnc_profiles_kb_theme_refresh(void)
     modulus_ui_dialog_theme_refresh(s_rename_modal);
     modulus_ui_dialog_theme_refresh(s_mgr_modal);
 }
+
+#endif /* !CONFIG_MODULUS_ZIG_UI_ENGINE */

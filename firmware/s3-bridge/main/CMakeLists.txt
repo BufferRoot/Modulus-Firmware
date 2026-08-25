@@ -4,6 +4,7 @@ idf_component_register(
         "espnow_link.cpp"
         "uart_bridge.cpp"
         "halt_gpio.cpp"
+        "bridge_board.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         nvs_flash

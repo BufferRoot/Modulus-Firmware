@@ -122,22 +122,6 @@ pub const MachineStatus = struct {
     probe_fresh: bool = false,
 };
 
-pub fn machineStateStr(s: MachineState) []const u8 {
-    return switch (s) {
-        .disconnected => "DISCONN",
-        .idle => "IDLE",
-        .run => "RUN",
-        .hold => "HOLD",
-        .jog => "JOG",
-        .alarm => "ALARM",
-        .door => "DOOR",
-        .check => "CHECK",
-        .home => "HOME",
-        .sleep => "SLEEP",
-        .tool => "TOOL",
-    };
-}
-
 pub fn activeAxisLetter(a: ActiveAxis) ?u8 {
     return switch (a) {
         .x => 'X',
@@ -163,6 +147,14 @@ pub fn wcsStr(w: WCS) []const u8 {
         .g59_3 => "G59.3",
         else => "?",
     };
+}
+
+/// G10 L20 / L2 `P` word for a WCS. G54→1 … G59.3→9.
+/// Never 0 — classic Grbl and many controllers reject `P0` (error 2 / ignored).
+pub fn wcsG10P(w: WCS) u8 {
+    const idx = @intFromEnum(w);
+    if (idx >= @intFromEnum(WCS._count)) return 1;
+    return @intCast(idx + 1);
 }
 
 pub fn stepSizeVal(s: StepSize) f32 {

@@ -73,6 +73,16 @@ monitor*.log
 flash-*.log
 build-*.log
 build-*.err
+boot_capture*.txt
+build_*.txt
+build-*.txt
+test_*.txt
+test-*.txt
+cap_touch.txt
+tab5_bridge_build.txt
+_ps_out.txt
+_zig_env.txt
+logs/
 
 # Editor / OS
 .DS_Store

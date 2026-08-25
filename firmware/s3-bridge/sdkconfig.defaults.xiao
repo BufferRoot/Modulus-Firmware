@@ -1,0 +1,11 @@
+# Overlay for Seeed XIAO ESP32-S3 — list after sdkconfig.defaults:
+#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.xiao" set-target esp32s3
+# Or: .\scripts\build_s3_bridge.ps1 -Board xiao -Action fullclean
+# then: .\scripts\build_s3_bridge.ps1 -Board xiao
+
+CONFIG_S3_BRIDGE_BOARD_MINI1=n
+CONFIG_S3_BRIDGE_BOARD_XIAO=y
+
+# USB-C Serial/JTAG shell — GPIO43/44 stay free for UART1 → grblHAL
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=y

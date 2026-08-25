@@ -10,6 +10,7 @@ pub const headers = [_][]const u8{
     "ext_encoder_shim.h",
     "i18n_shim.h",
     "i2c_coex_shim.h",
+    "i2c_scan_shim.h",
     "imu_shim.h",
     "nvs_shim.h",
     "power_shim.h",
@@ -24,5 +25,5 @@ pub const headers = [_][]const u8{
 };
 
 test "shim: bundle header count" {
-    try @import("std").testing.expectEqual(@as(usize, 20), headers.len);
+    try @import("std").testing.expectEqual(@as(usize, 21), headers.len);
 }

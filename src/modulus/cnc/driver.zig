@@ -350,12 +350,12 @@ pub const Driver = struct {
         commands.cmdHomeAxis(self, axis_idx);
     }
 
-    pub fn cmdZeroAxis(self: *Driver, axis_idx: u8) void {
-        commands.cmdZeroAxis(self, axis_idx);
+    pub fn cmdZeroAxis(self: *Driver, axis_idx: u8) bool {
+        return commands.cmdZeroAxis(self, axis_idx);
     }
 
-    pub fn cmdZeroAll(self: *Driver) void {
-        commands.cmdZeroAll(self);
+    pub fn cmdZeroAll(self: *Driver) bool {
+        return commands.cmdZeroAll(self);
     }
 
     pub fn cycleWcs(self: *Driver) void {
@@ -501,4 +501,6 @@ pub const Driver = struct {
 
 test {
     _ = @import("driver_tests.zig");
+    _ = @import("session_soak_tests.zig");
+    _ = @import("estop_safety_tests.zig");
 }

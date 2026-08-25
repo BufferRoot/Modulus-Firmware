@@ -23,6 +23,7 @@ typedef struct {
     float feed_rate;
     uint8_t feed_ovr;
     uint8_t spindle_ovr;
+    uint8_t rapid_ovr;
     uint8_t wcs;
     uint8_t tool_number;
     uint8_t active_axis;
@@ -63,6 +64,9 @@ void modulus_ui_show_quick_settings(void);
 void modulus_ui_hide_quick_settings(void);
 void modulus_ui_show_power_menu(void);
 void modulus_ui_hide_power_menu(void);
+
+/** Current CPU core id (for AMP fences; wraps esp_cpu_get_core_id). */
+unsigned modulus_amp_core_id(void);
 
 #ifdef __cplusplus
 }

@@ -1,8 +1,13 @@
 # ESP32-S3 ESP-NOW UART bridge (field grblHAL relay - separate from Tab5 P4/C6).
 # Path: firmware/s3-bridge/
+# XIAO: .\scripts\build_s3_bridge.ps1 -Board xiao -Action fullclean
+#       .\scripts\build_s3_bridge.ps1 -Board xiao
+#       .\scripts\build_s3_bridge.ps1 -Board xiao -Action flash -Port COM9
 param(
     [ValidateSet("build", "flash", "monitor", "fullclean", "set-target", "flash-monitor")]
     [string]$Action = "build",
+    [ValidateSet("mini1", "xiao")]
+    [string]$Board = "mini1",
     [string]$Port = "COM8",
     [string]$IdfPath = ""
 )
@@ -10,6 +15,13 @@ param(
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $S3Dir = Join-Path $RepoRoot "firmware\s3-bridge"
+
+function Get-IdfDefaultsArgs {
+    if ($Board -eq "xiao") {
+        return @("-D", "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.xiao")
+    }
+    return @()
+}
 
 function Ensure-IdfEnv {
     param([string]$PathOverride)
@@ -40,23 +52,29 @@ if (-not (Test-Path $S3Dir)) {
 }
 
 Ensure-IdfEnv -PathOverride $IdfPath
-Write-Host "==> S3 bridge: $S3Dir"
+Write-Host "==> S3 bridge: $S3Dir  board=$Board"
+$IdfDefaults = Get-IdfDefaultsArgs
 
 Push-Location $S3Dir
 try {
     switch ($Action) {
         "set-target" {
-            idf.py set-target esp32s3
+            idf.py @IdfDefaults set-target esp32s3
         }
         "fullclean" {
             idf.py fullclean
         }
         "build" {
             if (-not (Test-Path "sdkconfig")) {
-                Write-Host "==> idf.py set-target esp32s3 (first build)"
-                idf.py set-target esp32s3
+                Write-Host "==> idf.py set-target esp32s3 (first build, board=$Board)"
+                idf.py @IdfDefaults set-target esp32s3
+            } elseif ($Board -eq "xiao") {
+                $cfg = Get-Content "sdkconfig" -Raw
+                if ($cfg -notmatch "CONFIG_S3_BRIDGE_BOARD_XIAO=y") {
+                    Write-Error "sdkconfig is not XIAO. Run: .\scripts\build_s3_bridge.ps1 -Board xiao -Action fullclean"
+                }
             }
-            idf.py build
+            idf.py @IdfDefaults build
             $bin = Join-Path $S3Dir "build\s3_espnow_uart_bridge.bin"
             if (Test-Path $bin) {
                 $bytes = (Get-Item $bin).Length

@@ -9,6 +9,7 @@ pub const cnc = @import("cnc/root.zig");
 pub const hal = @import("hal/root.zig");
 pub const runtime = @import("runtime/root.zig");
 pub const ui = @import("ui/root.zig");
+pub const ui_engine = @import("ui_engine/root.zig");
 
 comptime {
     if (build_options.device_nvs) {
@@ -26,6 +27,7 @@ test {
     _ = @import("hal/wireless/root.zig");
     _ = @import("runtime/root.zig");
     _ = @import("ui/root.zig");
+    _ = @import("ui_engine/root.zig");
     if (!build_options.device_nvs) {
         _ = @import("firmware/host_tests.zig");
         _ = @import("firmware/system_task.zig");

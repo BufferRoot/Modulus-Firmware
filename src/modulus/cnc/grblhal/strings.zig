@@ -1,6 +1,6 @@
 //! grblHAL alarm/error human-readable strings — grblhal_defs.h.
 
-pub fn alarm_str(alarm: u8) []const u8 {
+fn alarm_str(alarm: u8) []const u8 {
     return switch (alarm) {
         0 => "No alarm",
         1 => "Hard limit triggered",

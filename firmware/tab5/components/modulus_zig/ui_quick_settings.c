@@ -56,21 +56,73 @@ static void qs_section_title(lv_obj_t *parent, const char *txt)
     lv_obj_set_style_pad_top(t, MOD_UI_SPACE_XS, 0);
 }
 
+static bool s_qs_drag;
+static lv_coord_t s_qs_drag_start_ty;
+static lv_coord_t s_qs_drag_start_py;
+
+static void qs_handle_drag_cb(lv_event_t *e)
+{
+    if (!s_panel) {
+        return;
+    }
+    lv_indev_t *indev = lv_event_get_indev(e);
+    if (!indev) {
+        indev = lv_indev_active();
+    }
+    if (!indev) {
+        return;
+    }
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+    const lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_PRESSED) {
+        s_qs_drag = true;
+        s_qs_drag_start_ty = lv_obj_get_style_translate_y(s_panel, 0);
+        s_qs_drag_start_py = p.y;
+        lv_anim_delete(s_panel, NULL);
+        return;
+    }
+    if (code == LV_EVENT_PRESSING && s_qs_drag) {
+        lv_coord_t dy = p.y - s_qs_drag_start_py;
+        if (dy < 0) {
+            dy = 0; /* dismiss only downward */
+        }
+        lv_obj_set_style_translate_y(s_panel, s_qs_drag_start_ty + dy, 0);
+        return;
+    }
+    if ((code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) && s_qs_drag) {
+        s_qs_drag = false;
+        const lv_coord_t ty = lv_obj_get_style_translate_y(s_panel, 0);
+        if (ty > 96) {
+            modulus_ui_hide_quick_settings();
+        } else {
+            modulus_ui_anim_translate_y(s_panel, ty, 0, modulus_ui_motion_spatial_ms(true), true,
+                                        NULL, NULL);
+        }
+    }
+}
+
 static void qs_drag_handle(lv_obj_t *parent)
 {
-    /* MD3 bottom-sheet drag handle — decorative (dismiss is scrim tap). */
+    /* MD3 drag handle — ≥48dp hit; drag down dismisses sheet. */
     lv_obj_t *wrap = lv_obj_create(parent);
     lv_obj_remove_style_all(wrap);
-    lv_obj_set_size(wrap, lv_pct(100), 20);
+    lv_obj_set_size(wrap, lv_pct(100), MOD_UI_TOUCH_MIN);
     qs_disable_scroll(wrap);
+    lv_obj_add_flag(wrap, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(wrap, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_event_cb(wrap, qs_handle_drag_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(wrap, qs_handle_drag_cb, LV_EVENT_PRESSING, NULL);
+    lv_obj_add_event_cb(wrap, qs_handle_drag_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(wrap, qs_handle_drag_cb, LV_EVENT_PRESS_LOST, NULL);
     lv_obj_t *bar = lv_obj_create(wrap);
     lv_obj_remove_style_all(bar);
     lv_obj_set_size(bar, 32, 4);
     lv_obj_set_style_bg_color(bar, modulus_ui_color_outline_variant(), 0);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(bar, MOD_UI_SHAPE_FULL, 0);
+    lv_obj_remove_flag(bar, LV_OBJ_FLAG_CLICKABLE);
 }
 
 static void qs_status_card(lv_obj_t *parent, const char *line1, const char *line2, bool warn)
@@ -86,7 +138,7 @@ static void qs_status_card(lv_obj_t *parent, const char *line1, const char *line
     lv_obj_set_style_pad_hor(card, MOD_UI_SPACE_MD, 0);
     lv_obj_set_style_pad_ver(card, MOD_UI_SPACE_SM, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(card, 2, 0);
+    lv_obj_set_style_pad_row(card, MOD_UI_SPACE_XS, 0);
     lv_obj_t *a = lv_label_create(card);
     lv_label_set_text(a, line1);
     lv_obj_set_style_text_color(a, warn ? modulus_ui_color_on_error_container()
@@ -240,7 +292,7 @@ static lv_obj_t *qs_slider_row(lv_obj_t *parent, const char *name, int32_t min_v
 {
     lv_obj_t *row = lv_obj_create(parent);
     lv_obj_remove_style_all(row);
-    lv_obj_set_size(row, lv_pct(100), 44);
+    lv_obj_set_size(row, lv_pct(100), MOD_UI_TOUCH_MIN);
     qs_disable_scroll(row);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1124,6 +1176,7 @@ void modulus_ui_show_quick_settings(void)
     lv_obj_set_width(panel, lv_pct(100));
     lv_obj_set_height(panel, LV_SIZE_CONTENT);
     lv_obj_set_style_min_height(panel, 360, 0);
+    lv_obj_set_style_max_height(panel, 640, 0);
     lv_obj_align(panel, LV_ALIGN_BOTTOM_MID, 0, 0);
     qs_disable_scroll(panel);
     lv_obj_set_style_bg_color(panel, modulus_ui_color_surface_container(), 0);
@@ -1149,7 +1202,7 @@ void modulus_ui_show_quick_settings(void)
     lv_obj_remove_style_all(hdr);
     lv_obj_set_size(hdr, lv_pct(100), 56);
     qs_disable_scroll(hdr);
-    lv_obj_set_style_bg_color(hdr, modulus_ui_color_surface_container(), 0);
+    lv_obj_set_style_bg_color(hdr, modulus_ui_color_surface_container_high(), 0);
     lv_obj_set_style_bg_opa(hdr, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(hdr, MOD_UI_SHAPE_MD, 0);
     lv_obj_set_style_pad_hor(hdr, MOD_UI_SPACE_SM, 0);
@@ -1180,8 +1233,15 @@ void modulus_ui_show_quick_settings(void)
 
     s_body = lv_obj_create(panel);
     lv_obj_remove_style_all(s_body);
-    lv_obj_set_size(s_body, lv_pct(100), LV_SIZE_CONTENT);
-    qs_disable_scroll(s_body);
+    lv_obj_set_width(s_body, lv_pct(100));
+    lv_obj_set_height(s_body, LV_SIZE_CONTENT);
+    /* Cap body so Probe/Devices scroll instead of growing past the sheet. */
+    lv_obj_set_style_max_height(s_body, 420, 0);
+    lv_obj_add_flag(s_body, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(s_body, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(s_body, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_remove_flag(s_body, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_remove_flag(s_body, LV_OBJ_FLAG_SCROLL_MOMENTUM);
     lv_obj_set_flex_flow(s_body, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(s_body, MOD_UI_SPACE_SM, 0);
     qs_build_body();
@@ -1205,6 +1265,7 @@ void modulus_ui_hide_quick_settings(void)
     if (!s_sheet) {
         return;
     }
+    s_qs_drag = false;
     if (s_qs_refresh) {
         lv_timer_delete(s_qs_refresh);
         s_qs_refresh = NULL;

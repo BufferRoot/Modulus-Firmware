@@ -50,7 +50,7 @@ static uint8_t       s_permit_s;
 static uint8_t       s_reply_seq; /* non-zero while handling a sequenced host cmd */
 static hub_dev_t     s_devs[HUB_DEV_MAX];
 
-#define HUB_HEARTBEAT_TICKS 50 /* 50 * 100 ms = 5 s */
+#define HUB_HEARTBEAT_TICKS 20 /* 20 * 100 ms = 2 s (was 5 s) */
 
 /* reportable_change blobs must outlive async ZCL config-report TX */
 static uint8_t  s_chg_u8 = 1;

@@ -1,6 +1,7 @@
 //! Core 1 FreeRTOS `sys_task` — ~100 Hz CNC/transport/encoder poll (device only).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const boot = @import("../core/boot.zig");
 const freertos_ticks = @import("freertos_ticks.zig");
 const policy = boot.SystemTaskPolicy;
@@ -21,8 +22,17 @@ extern fn xTaskDelayUntil(prev_wake: *u32, increment: u32) i32;
 extern fn xTaskGetTickCount() u32;
 extern fn esp_timer_get_time() i64;
 
+/// C shim `modulus_amp_core_id` on device (FreeRTOS core helpers are macros).
+extern fn modulus_amp_core_id() u32;
+
+fn ampCoreId() u32 {
+    if (comptime builtin.os.tag != .freestanding) return policy.core_affinity;
+    return modulus_amp_core_id();
+}
+
 var tick_fn: ?*const fn (u32) void = null;
 var spawned: bool = false;
+var amp_warned: bool = false;
 
 pub fn configure(tick: *const fn (u32) void) void {
     tick_fn = tick;
@@ -56,6 +66,10 @@ pub fn spawn() bool {
 
 fn systemTaskEntry(_: ?*anyopaque) callconv(.c) void {
     const tick = tick_fn orelse return;
+    if (ampCoreId() != policy.core_affinity and !amp_warned) {
+        amp_warned = true;
+        std.log.scoped(.firmware).err("AMP fence: sys_task on core {d} (expected {d})", .{ ampCoreId(), policy.core_affinity });
+    }
     const period_ticks = freertos_ticks.msToTicks(policy.period_ms);
     var last_wake: u32 = xTaskGetTickCount();
 

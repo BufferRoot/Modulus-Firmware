@@ -4,6 +4,7 @@
  */
 #include "ext_encoder_shim.h"
 #include "mbus_shim.h"
+#include "nvs_shim.h"
 #include "tab5_ext_i2c.h"
 #include "tab5_hw.h"
 
@@ -188,6 +189,17 @@ void modulus_ext_encoder_hw_init(void)
     s_last_detect_us = s_boot_us;
     s_detect_failures = 0;
     s_hw_init = true;
+    /* Experimental 8/12 ms coalesce left sticky NVS — restore stock 20/32. */
+    {
+        const uint8_t coal = modulus_nvs_get_u8("jog_coal_ms", 20);
+        if (coal == 8 || coal == 12) {
+            (void)modulus_nvs_set_u8("jog_coal_ms", 20);
+        }
+        const uint8_t pend = modulus_nvs_get_u8("jog_pend_max", 32);
+        if (pend == 48) {
+            (void)modulus_nvs_set_u8("jog_pend_max", 32);
+        }
+    }
     ESP_LOGI(TAG, "HAL ready Port A I2C%d SDA=%d SCL=%d @ 0x%02X (wheel trace @ Verbose)",
              TAB5_EXT_I2C_PORT, TAB5_EXT_I2C_SDA_GPIO, TAB5_EXT_I2C_SCL_GPIO, EXT_ENC_ADDR);
 }

@@ -45,6 +45,24 @@ pub const SystemTaskPolicy = struct {
     pub const name = "sys_task";
 };
 
+/// Wired E-stop poll — must stay above UI priority and off Core 0 paint.
+/// Mirrors `estop_gpio_shim.c` ESTOP_TASK_* (keep in sync).
+pub const EstopGpioPolicy = struct {
+    pub const core_affinity: u8 = 1;
+    pub const stack_bytes: u16 = 2048;
+    pub const priority: u8 = 8;
+    pub const poll_ms: u16 = 10;
+    pub const name = "estop_gpio";
+};
+
+/// Core-0 Zig UI scanout — never above estop / never on Core 1.
+pub const ZigUiTaskPolicy = struct {
+    pub const core_affinity: u8 = 0;
+    pub const stack_bytes: u16 = 40960;
+    pub const priority: u8 = 5;
+    pub const name = "zig_ui";
+};
+
 /// Core 0 event dispatch task — UI-safe subscriber callbacks (LVGL later).
 /// stack_words is BYTES on ESP-IDF. UI event handlers run wireless/C6 RPC work
 /// inline (ESP-NOW connect: apply_peer -> ensure_inited -> blocking RPC, plus
@@ -271,4 +289,12 @@ test "core: boot spawns system task hook" {
     };
     try run(&ctx);
     try std.testing.expect(Ctx.spawned);
+}
+
+test "core: AMP fence — estop above UI, CNC on Core 1" {
+    try std.testing.expectEqual(@as(u8, 1), EstopGpioPolicy.core_affinity);
+    try std.testing.expectEqual(@as(u8, 1), SystemTaskPolicy.core_affinity);
+    try std.testing.expectEqual(@as(u8, 0), ZigUiTaskPolicy.core_affinity);
+    try std.testing.expect(EstopGpioPolicy.priority > ZigUiTaskPolicy.priority);
+    try std.testing.expect(EstopGpioPolicy.priority > SystemTaskPolicy.priority);
 }

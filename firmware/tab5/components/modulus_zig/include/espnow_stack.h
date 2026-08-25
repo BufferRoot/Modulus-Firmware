@@ -31,7 +31,8 @@ bool modulus_espnow_stack_probe(uint8_t channel);
 bool modulus_espnow_stack_wait_inited(uint32_t timeout_ms);
 
 /** SDIO settle + INIT with one retry; use after WiFi stack is up. */
-#define MODULUS_ESPNOW_INIT_WAIT_MS 3000U
+/** C6 init budget — keep short; deferred reconnect retries if not ready. */
+#define MODULUS_ESPNOW_INIT_WAIT_MS 1200U
 bool modulus_espnow_stack_ensure_inited(uint32_t timeout_ms);
 
 typedef void (*modulus_espnow_stack_evt_fn)(uint8_t evt, const uint8_t *payload, uint16_t len,

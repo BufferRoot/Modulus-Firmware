@@ -75,6 +75,8 @@ pub const chg_en = "chg_en";
 pub const cnc_autocon = "cnc_autocon";
 pub const cnc_axes = "cnc_axes";
 pub const cnc_conn = "cnc_conn";
+/// Last selected transport index while `cnc_conn` is Off (255). Survives disconnect.
+pub const cnc_sel = "cnc_sel";
 /// CONT jog feed scale, percent (10–200, default 100).
 pub const cnc_contpct = "cnc_contpct";
 pub const cnc_encdiv = "cnc_encdiv";
@@ -162,6 +164,8 @@ pub const cnf_mac = "cnf_mac";
 /// Jog coalesce window (ms) and max pending STEP detents.
 pub const jog_coal_ms = "jog_coal_ms";
 pub const jog_pend_max = "jog_pend_max";
+pub const ovr_l = "ovr_l";
+pub const ovr_r = "ovr_r";
 /// WCS custom names (short) + lock bitmask (bit0=G54 … bit5=G59).
 pub const wcs_n0 = "wcs_n0";
 pub const wcs_n1 = "wcs_n1";
@@ -253,7 +257,10 @@ pub const uhid_vid = "uhid_vid";
 pub const ugp_dead = "ugp_dead";
 pub const ugp_map = "ugp_map";
 pub const ugp_poll = "ugp_poll";
+pub const ui_adv = "ui_adv";
 pub const ui_lang = "ui_lang";
+/// MD3 system font size: 0=Small 1=Default 2=Large 3=Largest.
+pub const font_scale = "font_scale";
 pub const usb5v = "usb5v";
 pub const vol = "vol";
 pub const wake_motion = "wake_motion";
@@ -280,7 +287,7 @@ pub const zigbee = "zigbee";
 /// Comptime guard — every exported key must respect NVS length limit.
 pub const all_keys = .{
     accent,      ant_ext,     bat_adapt, bat_type,    bat_warn,     ble_mtu,      ble_name,  ble_phy,    bright,     bt,          bt_pcnt,
-    can_brate,   can_filt,    can_mode,  can_nid,     chg_en,       cnc_autocon,  cnc_axes,  cnc_conn,   cnc_contpct, cnc_encdiv, cnc_feedovr, cnc_incr,
+    can_brate,   can_filt,    can_mode,  can_nid,     chg_en,       cnc_autocon,  cnc_axes,  cnc_conn,   cnc_sel,    cnc_contpct, cnc_encdiv, cnc_feedovr, cnc_incr,
     cnc_jmode,   cnc_jogspd,  cnc_mac0,  cnc_mac1,    cnc_mac2,     cnc_mac3,     cnc_macro, cnc_mpgpol, cnc_mxfeed,  cnc_mxrpm,  cnc_odo_h,   cnc_odo_l,
     cnc_odx_h,   cnc_odx_l,   cnc_ody_h, cnc_ody_l,   cnc_odz_h,    cnc_odz_l,    cnc_oda_h,  cnc_oda_l,  cnc_odb_h,   cnc_odb_l,  cnc_odc_h,   cnc_odc_l,
     cnc_svc_dt,  cnc_svc_nt,
@@ -288,7 +295,7 @@ pub const all_keys = .{
     cnc_qbtn1,   cnc_qbtn2,   cnc_qbtn3, cnc_run_h,   cnc_run_l,    cnc_slim,    cnc_spcw,     cnc_spindovr, cnc_sph_h, cnc_sph_l,  cnc_stepacc,
     cnc_tr_x,    cnc_tr_y,    cnc_tr_z,  cnc_tr_a,    cnc_tr_b,     cnc_tr_c,
     cnc_unit,    cnc_wcs,     cnc_prof,  cnc_p0,      cnc_p1,       cnc_p2,       cnc_p3,
-    cnf_cycle,   cnf_spin,    cnf_zero,  cnf_home,    cnf_mac,      jog_coal_ms,  jog_pend_max,
+    cnf_cycle,   cnf_spin,    cnf_zero,  cnf_home,    cnf_mac,      jog_coal_ms,  jog_pend_max, ovr_l, ovr_r,
     wcs_n0,      wcs_n1,      wcs_n2,    wcs_n3,      wcs_n4,       wcs_n5,       wcs_lock,
     darkmode,  datefmt,     dim_to,       en_chan,      en_enc,    en_mac,     en_rate,    espnow,     ext5v,       flip,
     i2c_addr,    i2c_pull,    i2c_spd,   kb_full,     lefty,        lcnc_cpw,     lcnc_epw,  loglvl,       mach_name, mach_type,  masso_ip,   masso_rx,    masso_sn,   masso_tx,    mat_rec,    mic_gain,   ntp,         pin_hash,
@@ -296,7 +303,7 @@ pub const all_keys = .{
     pwr_dsto,     pwr_gext,  pwr_gusb,   pwr_gwifi,  pwr_mode,    pwr_wake,
     pwr_wtmin,   qc,          r4_baud,   r4_dbit,     r4_dir,       r4_par,       r4_sbit,   refr_hz,    scr_to,     ser_baud,    ser_dbit,
     ser_flow,    ser_par,     ser_sbit,  smooth_anim, snd_dn,       snd_up,       shop_wifioff, sw_icons, t_24h,     thread,     tn_host,    tn_port,     tone_prof,
-    touch_glove, tsound,      tz_idx,    uhid_pid,    uhid_poll,    uhid_vid,     ugp_dead,  ugp_map,    ugp_poll,   ui_lang,     usb5v,
+    touch_glove, tsound,      tz_idx,    uhid_pid,    uhid_poll,    uhid_vid,     ugp_dead,  ugp_map,    ugp_poll,   ui_adv,     ui_lang,     font_scale, usb5v,
     vol,         wake_motion, wf_arecon, wf_auto,     wf_bsave,     wf_dhcp,      wf_direct, wf_lowdata, wf_pass,    wf_proxy,    wf_rmac,
     wf_roam,     wf_scanon,   wf_sleep,  wf_ssid,     wifi,         ws_host,      ws_path,   ws_port,    ws_tls,     zigbee,
 };

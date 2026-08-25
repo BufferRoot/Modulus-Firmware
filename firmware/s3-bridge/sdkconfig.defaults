@@ -34,5 +34,9 @@ CONFIG_FREERTOS_HZ=1000
 # NVS for persistent settings
 CONFIG_NVS_ENCRYPTION=n
 
-# UART — enable hardware driver
-CONFIG_ESP_CONSOLE_UART_NUM=0
+# Shell on native USB (XIAO USB-C / S3 USB Serial/JTAG) so UART1 can use GPIO43/44
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=y
+
+# Default board when NVS has no `board` key. Runtime: USB shell `board mini1|xiao`
+CONFIG_S3_BRIDGE_BOARD_MINI1=y

@@ -1,8 +1,9 @@
 /*
- * ESP32-S3 ESP-NOW ↔ UART Bridge - USB shell entry (UART0 / USB-CDC).
+ * ESP32-S3 ESP-NOW ↔ UART Bridge - USB shell entry (UART0 or USB Serial/JTAG).
  * See bridge_config.h for full command list.
  */
 #include "bridge_config.h"
+#include "bridge_board.h"
 #include "espnow_link.h"
 #include "uart_bridge.h"
 #include "halt_gpio.h"
@@ -39,13 +40,17 @@ static void print_link_health()
     uint32_t fails = espnow_fail_count();
     uint32_t drops = espnow_inbound_drops();
     uint32_t pending = espnow_inbound_pending();
+    uint32_t odrops = espnow_outbound_drops();
+    uint32_t owait = espnow_outbound_pending();
+    uint32_t overruns = uart_bridge_rx_overruns();
     const char* health = "OK";
 
     if (strcmp(mac, "not seen yet") == 0) {
         health = "WAIT - no Tab5 peer yet";
-    } else if (fails > 100 || drops > 50 || pending > (ESPNOW_QUEUE_DEPTH / 2)) {
+    } else if (fails > 100 || drops > 50 || overruns > 0 ||
+               pending > (ESPNOW_QUEUE_DEPTH / 2)) {
         health = "FAULT - check channel / power / Tab5";
-    } else if (fails > 0 || drops > 0 || pending > 8) {
+    } else if (fails > 0 || drops > 0 || odrops > 0 || pending > 8 || owait > 8) {
         health = "DEGRADED";
     }
 
@@ -59,8 +64,14 @@ static void print_link_health()
     }
     printf("  Inbound queue    : %lu waiting, %lu drops\r\n",
            (unsigned long)pending, (unsigned long)drops);
+    printf("  Outbound queue   : %lu waiting, %lu drops (oldest)\r\n",
+           (unsigned long)owait, (unsigned long)odrops);
     printf("  UART RX buffered : %u bytes\r\n",
            (unsigned)uart_bridge_rx_buffered());
+    if (overruns > 0) {
+        printf("  UART RX overrun  : %lu (FIFO/ring)\r\n",
+               (unsigned long)overruns);
+    }
     if (uart_bridge_uart_tx_fails() > 0) {
         printf("  UART TX fails    : %lu\r\n",
                (unsigned long)uart_bridge_uart_tx_fails());
@@ -69,7 +80,9 @@ static void print_link_health()
 
 static void print_status()
 {
+    const bridge_board_t *b = bridge_board_get();
     printf("\r\n=== S3 ESP-NOW <-> UART Bridge ===\r\n");
+    printf("  Board            : %s  [%s]  %s\r\n", b->id, b->vendor, b->name);
     print_link_health();
     printf("  ESP-NOW channel  : %d\r\n",    espnow_get_channel());
     printf("  Tab5 MAC         : %s\r\n",    espnow_tab5_mac_str());
@@ -80,11 +93,21 @@ static void print_status()
     printf("  UART baud        : %lu\r\n",   (unsigned long)uart_bridge_baud());
     printf("  UART TX GPIO     : %d\r\n",    uart_bridge_tx_gpio());
     printf("  UART RX GPIO     : %d\r\n",    uart_bridge_rx_gpio());
-    printf("  Batch trigger    : %lu ms\r\n", (unsigned long)uart_bridge_batch_ms());
-    printf("  Activity LEDs    : %s\r\n",    uart_bridge_led_enabled() ? "on" : "off");
-    printf("  LED TX (red)     : GPIO%d\r\n", LED_TX_GPIO);
-    printf("  LED RX (green)   : GPIO%d\r\n", LED_RX_GPIO);
-    printf("  HALT_host        : GPIO%d (%s)\r\n", HALT_HOST_GPIO,
+    printf("  Batch trigger    : %lu ms (idle coalesce)\r\n",
+           (unsigned long)uart_bridge_batch_ms());
+    if (b->led_tx < 0) {
+        printf("  Activity LEDs    : n/a (WS2812 not GPIO-driven)\r\n");
+    } else {
+        printf("  Activity LEDs    : %s\r\n", uart_bridge_led_enabled() ? "on" : "off");
+        if (b->led_tx == b->led_rx) {
+            printf("  User LED         : GPIO%d (%s)\r\n", b->led_tx,
+                   b->led_on ? "active high" : "active low");
+        } else {
+            printf("  LED TX           : GPIO%d\r\n", b->led_tx);
+            printf("  LED RX           : GPIO%d\r\n", b->led_rx);
+        }
+    }
+    printf("  HALT_host        : GPIO%d (%s)\r\n", halt_gpio_pin(),
            halt_gpio_is_asserted() ? "ASSERTED" : "released");
     printf("  Bytes -> grblHAL : %lu\r\n",   (unsigned long)uart_bridge_bytes_tx());
     printf("  Bytes -> Tab5    : %lu\r\n",   (unsigned long)uart_bridge_bytes_rx());
@@ -96,11 +119,15 @@ static void print_help()
     printf("\r\nCommands:\r\n");
     printf("  channel <1-13>               - ESP-NOW channel (live apply)\r\n");
     printf("  baud <115200|230400|460800|921600>  - UART baud rate\r\n");
-    printf("  txgpio <n>                   - UART TX GPIO (default %d)\r\n", UART_TX_GPIO);
-    printf("  rxgpio <n>                   - UART RX GPIO (default %d)\r\n", UART_RX_GPIO);
+    printf("  txgpio <n>                   - UART TX GPIO (board default %d)\r\n",
+           bridge_board_get()->uart_tx);
+    printf("  rxgpio <n>                   - UART RX GPIO (board default %d)\r\n",
+           bridge_board_get()->uart_rx);
+    printf("  board                         - list boards (grouped by vendor)\r\n");
+    printf("  board <id>                    - set pinout (saved)\r\n");
     printf("  uartping                     - UART wiring test (? to grblHAL, not ESP-NOW)\r\n");
     printf("  mpgactivate                  - send 0x8B MPG mode toggle to grblHAL\r\n");
-    printf("  batchms <1-20>               - UART->ESP-NOW first-byte wait (ms)\r\n");
+    printf("  batchms <1-20>               - UART->ESP-NOW idle coalesce (ms)\r\n");
     printf("  led on|off                   - activity LED pulses\r\n");
     printf("  stats reset                  - clear traffic / fail counters\r\n");
     printf("  status                       - config, counters, link health\r\n");
@@ -157,6 +184,17 @@ static void handle_command(const char* line)
         }
         uart_bridge_reinit(uart_bridge_baud(), uart_bridge_tx_gpio(), gpio);
         printf("  RX GPIO set to %d\r\n", gpio);
+
+    } else if (strcmp(cmd, "board") == 0) {
+        if (arg[0] == '\0') {
+            bridge_board_print_list();
+        } else {
+            int rc = bridge_board_set(arg);
+            if (rc == -1) {
+                printf("  Unknown id '%s' — type 'board' for the list\r\n", arg);
+                return;
+            }
+        }
 
     } else if (strcmp(cmd, "uartping") == 0) {
         /* UART-only path - does not exercise Tab5 / ESP-NOW */
@@ -220,7 +258,8 @@ static void shell_task(void* arg)
     char line[64];
     int  pos = 0;
 
-    printf("\r\nS3 ESP-NOW <-> UART Bridge (type 'help' for commands)\r\n");
+    printf("\r\nS3 ESP-NOW <-> UART Bridge  board=%s  (type 'board' or 'help')\r\n",
+           bridge_board_get()->id);
     print_status();
     printf("> ");
     fflush(stdout);
@@ -269,6 +308,7 @@ extern "C" void app_main()
      * is never called before esp_now_init() has run. */
     espnow_init();
 
+    bridge_board_init();
     halt_gpio_init();
 
     /* Initialise UART bridge (sets up driver + RX task) */

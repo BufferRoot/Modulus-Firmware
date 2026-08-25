@@ -485,7 +485,7 @@ static void power_reset_cb(void)
     modulus_power_set_charge_en(true);
     modulus_power_set_quick_charge(true);
     modulus_power_set_ext5v(true);
-    modulus_power_set_usb5v(false);
+    modulus_power_set_usb5v(true);
 
     modulus_ui_settings_build_power_tab();
 }
@@ -584,7 +584,7 @@ void modulus_ui_settings_build_power_tab(void)
     settings_section(p, "Power rails", NULL);
     lv_obj_t *ext = settings_toggle_row(p, "EXT 5V output", modulus_nvs_get_u8("ext5v", 1) != 0);
     lv_obj_add_event_cb(ext, rail_ext5v_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    lv_obj_t *usb = settings_toggle_row(p, "USB 5V output", modulus_nvs_get_u8("usb5v", 0) != 0);
+    lv_obj_t *usb = settings_toggle_row(p, "USB 5V output", modulus_nvs_get_u8("usb5v", 1) != 0);
     lv_obj_add_event_cb(usb, rail_usb5v_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     settings_section(p, "Display sleep", NULL);

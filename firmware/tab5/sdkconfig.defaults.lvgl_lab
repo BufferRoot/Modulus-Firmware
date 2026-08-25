@@ -1,0 +1,20 @@
+# LVGL UI lab profile — layered on sdkconfig.defaults via:
+#   .\scripts\build_tab5.ps1 -Lab
+# Forces legacy LVGL widget UI (CONFIG_MODULUS_ZIG_UI_ENGINE=n) + full Montserrat set.
+# Production flash uses sdkconfig.defaults alone (Zig UI on).
+
+CONFIG_MODULUS_ZIG_UI_ENGINE=n
+
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_18=y
+CONFIG_LV_FONT_MONTSERRAT_22=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_LV_FONT_MONTSERRAT_36=y
+CONFIG_LV_FONT_MONTSERRAT_44=y
+
+# Lab may re-enable LVGL sysmon; keep off by default (WDT risk under sw_rotate).
+# CONFIG_LV_USE_SYSMON is not set
+# CONFIG_LV_USE_PERF_MONITOR is not set

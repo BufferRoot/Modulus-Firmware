@@ -1,12 +1,18 @@
-# Enforce ASCII-only user-visible strings in Tab5 LVGL UI (Montserrat default font).
+# Enforce ASCII-only user-visible strings in the Tab5 UI.
+# Covers the LVGL C shims (Montserrat) and the Zig UI engine, whose Noto bake
+# stops at 0x7E — anything above it paints a blank cell at full advance width.
 param(
-    [string]$UiDir = ""
+    [string]$UiDir = "",
+    [string]$ZigUiDir = ""
 )
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $UiDir) {
     $UiDir = Join-Path $RepoRoot "firmware\tab5\components\modulus_zig"
+}
+if (-not $ZigUiDir) {
+    $ZigUiDir = Join-Path $RepoRoot "src\modulus\ui_engine"
 }
 $IncludeDir = Join-Path $UiDir "include"
 
@@ -56,7 +62,9 @@ function Test-DecodedAscii {
     $bad = @()
     foreach ($ch in $Decoded.ToCharArray()) {
         $code = [int][char]$ch
-        $ok = ($code -ge 0x20 -and $code -le 0x7E) -or $code -eq 0x0A
+        # Tab and newline appear in trim sets and sanitizer fixtures, never in
+        # drawn copy. Everything else outside printable ASCII is a paint bug.
+        $ok = ($code -ge 0x20 -and $code -le 0x7E) -or $code -eq 0x0A -or $code -eq 0x09
         if (-not $ok) {
             $bad += "U+{0:X4}" -f $code
         }
@@ -119,6 +127,26 @@ function Get-UiStringLiterals {
     return $results
 }
 
+# Zig has no UI-context heuristic: every literal in the engine is either drawn,
+# a format string, or an import path, and all three must be ASCII.
+function Get-ZigStringLiterals {
+    param(
+        [string]$FilePath,
+        [string]$Text
+    )
+    $results = [System.Collections.Generic.List[object]]::new()
+    $lines = $Text -split "`n"
+    for ($lineIdx = 0; $lineIdx -lt $lines.Count; $lineIdx++) {
+        foreach ($m in [regex]::Matches($lines[$lineIdx], '"((?:[^"\\]|\\.)*)"')) {
+            $literal = $m.Groups[1].Value
+            $decoded = Expand-CString $literal
+            $hit = Test-DecodedAscii $decoded $FilePath ($lineIdx + 1) $literal
+            if ($hit) { $results.Add($hit) }
+        }
+    }
+    return $results
+}
+
 $files = @()
 $files += Get-ChildItem -LiteralPath $UiDir -Filter "ui_*.c" -File -ErrorAction SilentlyContinue
 if (Test-Path $IncludeDir) {
@@ -126,6 +154,14 @@ if (Test-Path $IncludeDir) {
 }
 if ($files.Count -eq 0) {
     Write-Error "No ui_*.c/h files under $UiDir"
+}
+
+$zigFiles = @()
+if (Test-Path $ZigUiDir) {
+    $zigFiles += Get-ChildItem -LiteralPath $ZigUiDir -Filter "*.zig" -File -ErrorAction SilentlyContinue
+}
+if ($zigFiles.Count -eq 0) {
+    Write-Error "No *.zig files under $ZigUiDir"
 }
 
 $violations = [System.Collections.Generic.List[object]]::new()
@@ -136,9 +172,19 @@ foreach ($file in $files) {
         $violations.Add($hit)
     }
 }
+foreach ($file in $zigFiles) {
+    # Generated font atlases are byte tables, not text.
+    if ($file.Name -like "font_*.zig" -or $file.Name -like "icons_*.zig") { continue }
+    $raw = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
+    $stripped = Remove-CComments $raw
+    foreach ($hit in (Get-ZigStringLiterals $file.FullName $stripped)) {
+        $violations.Add($hit)
+    }
+}
 
 if ($violations.Count -eq 0) {
-    Write-Host "OK: $($files.Count) UI files - all checked literals are ASCII (Montserrat-safe)."
+    $total = $files.Count + $zigFiles.Count
+    Write-Host "OK: $total UI files ($($zigFiles.Count) Zig) - all checked literals are ASCII."
     exit 0
 }
 

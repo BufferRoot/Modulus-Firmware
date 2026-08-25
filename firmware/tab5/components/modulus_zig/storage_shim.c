@@ -8,6 +8,7 @@
 #include "tab5_port_map.h"
 #include "modulus_zig.h"
 #include "nvs_shim.h"
+#include "i2c_coex_shim.h"
 
 #include <bsp/m5stack_tab5.h>
 #include <esp_heap_caps.h>
@@ -16,6 +17,7 @@
 #include <esp_timer.h>
 #include <esp_vfs_fat.h>
 #include <lvgl.h>
+#include <usb/usb_host.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +31,81 @@ static const char *const k_loglvl_names[] = {
 
 static bool s_sd_mounted = false;
 static char s_mount_point[] = "/sdcard";
+
+/* USB Type-A host: Power tab owns VBUS (usb5v / PI4IOE E2.P3); BSP host stack
+ * enumerates devices when that rail is on. Same pin as BSP_FEATURE_USB. */
+static bool s_usb_started = false;
+static int s_usb_dev_count = 0;
+static char s_usb_status[32] = "VBUS off";
+static int64_t s_usb_last_poll_us = 0;
+
+static void usb_host_ensure(void)
+{
+    /* Defer until Zig boot finishes battery_init — BSP USB enable hits PI4IOE
+     * on the same M-Bus as INA226 without going through coex. */
+    if (!modulus_zig_boot_ok()) {
+        s_usb_dev_count = 0;
+        snprintf(s_usb_status, sizeof(s_usb_status), "Booting");
+        return;
+    }
+
+    const bool vbus = modulus_nvs_get_u8("usb5v", 1) != 0;
+    if (!vbus) {
+        if (s_usb_started) {
+            if (modulus_i2c_coex_lock(5000)) {
+                const esp_err_t stop = bsp_usb_host_stop();
+                modulus_i2c_coex_unlock();
+                if (stop != ESP_OK) {
+                    ESP_LOGW(TAG, "USB host stop: %s", esp_err_to_name(stop));
+                }
+            } else {
+                ESP_LOGW(TAG, "USB host stop skipped — I2C coex busy");
+                return;
+            }
+            s_usb_started = false;
+            ESP_LOGI(TAG, "USB host stopped (VBUS off)");
+        }
+        s_usb_dev_count = 0;
+        snprintf(s_usb_status, sizeof(s_usb_status), "VBUS off");
+        return;
+    }
+
+    if (!s_usb_started) {
+        if (!modulus_i2c_coex_lock(5000)) {
+            s_usb_dev_count = 0;
+            snprintf(s_usb_status, sizeof(s_usb_status), "I2C busy");
+            return;
+        }
+        const esp_err_t start = bsp_usb_host_start(BSP_USB_HOST_POWER_MODE_USB_DEV, true);
+        modulus_i2c_coex_unlock();
+        if (start == ESP_OK || start == ESP_ERR_INVALID_STATE) {
+            s_usb_started = true;
+            if (start == ESP_OK) {
+                ESP_LOGI(TAG, "USB host started (BSP)");
+            }
+        } else {
+            s_usb_dev_count = 0;
+            snprintf(s_usb_status, sizeof(s_usb_status), "Host start fail");
+            ESP_LOGW(TAG, "USB host start: %s", esp_err_to_name(start));
+            return;
+        }
+    }
+
+    const int64_t now = esp_timer_get_time();
+    if ((now - s_usb_last_poll_us) >= 200000) {
+        s_usb_last_poll_us = now;
+        usb_host_lib_info_t info = {0};
+        if (usb_host_lib_info(&info) == ESP_OK) {
+            s_usb_dev_count = info.num_devices;
+        }
+    }
+
+    if (s_usb_dev_count > 0) {
+        snprintf(s_usb_status, sizeof(s_usb_status), "Device linked");
+    } else {
+        snprintf(s_usb_status, sizeof(s_usb_status), "No device");
+    }
+}
 
 void modulus_storage_init(void)
 {
@@ -264,7 +341,7 @@ bool modulus_storage_export_diagnostics(const char *path)
 
     fprintf(f, "USB Type-A host: %s\n", modulus_storage_usb_host_status_text());
     fprintf(f, "USB Type-A VBUS: %s\n",
-            modulus_nvs_get_u8("usb5v", 0) ? "ON (Power tab)" : "OFF");
+            modulus_nvs_get_u8("usb5v", 1) ? "ON (Power tab)" : "OFF");
 
     fprintf(f, "I2C Scanner: %s\n", modulus_i2c_scan_status_text());
     fprintf(f, "Port A Grove: %s\n", modulus_i2c_scan_port_a_text());
@@ -296,7 +373,7 @@ bool modulus_storage_export_settings(const char *path, bool include_secrets)
         "cnc_proto", "cnc_conn", "cnc_autocon", "cnc_prof", "cnc_wcs", "cnc_unit",
         "cnc_jmode", "cnc_axes", "cnc_encdiv", "cnc_contpct", "cnc_stepacc", "cnc_mpgpol",
         "cnf_cycle", "cnf_spin", "cnf_zero", "cnf_home", "cnf_mac", "jog_coal_ms",
-        "jog_pend_max", "wcs_lock", "bright", "darkmode", "lefty", "flip",
+        "jog_pend_max", "ovr_l", "ovr_r", "wcs_lock", "bright", "darkmode", "lefty", "flip",
     };
     for (unsigned i = 0; i < sizeof(u8_keys) / sizeof(u8_keys[0]); i++) {
         fprintf(f, ",\n  \"%s\": %u", u8_keys[i], (unsigned)modulus_nvs_get_u8(u8_keys[i], 0));
@@ -413,7 +490,7 @@ bool modulus_storage_import_settings(const char *path, bool include_secrets)
         "cnc_proto", "cnc_conn", "cnc_autocon", "cnc_prof", "cnc_wcs", "cnc_unit",
         "cnc_jmode", "cnc_axes", "cnc_encdiv", "cnc_contpct", "cnc_stepacc", "cnc_mpgpol",
         "cnf_cycle", "cnf_spin", "cnf_zero", "cnf_home", "cnf_mac", "jog_coal_ms",
-        "jog_pend_max", "wcs_lock", "bright", "darkmode", "lefty", "flip",
+        "jog_pend_max", "ovr_l", "ovr_r", "wcs_lock", "bright", "darkmode", "lefty", "flip",
     };
     for (unsigned i = 0; i < sizeof(u8_keys) / sizeof(u8_keys[0]); i++) {
         unsigned v = 0;
@@ -467,14 +544,13 @@ void modulus_storage_clear_ui_cache(void)
 
 bool modulus_storage_is_usb_host_enabled(void)
 {
-    /* Type-A VBUS rail is Power tab `usb5v` (PI4IOE). Host-data detect is not
-     * exposed by m5stack_tab5 BSP yet — do not pretend the port is dead when
-     * power is on. Callers should use modulus_nvs usb5v for rail status. */
-    return false;
+    usb_host_ensure();
+    return s_usb_dev_count > 0;
 }
 
-/** ponytail: host-link detect not in BSP; Type-A VBUS uses Power `usb5v`. */
+/** Human status for Settings — VBUS + BSP USB host enumeration. */
 const char *modulus_storage_usb_host_status_text(void)
 {
-    return "Host detect N/A";
+    usb_host_ensure();
+    return s_usb_status;
 }

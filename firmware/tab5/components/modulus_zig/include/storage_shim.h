@@ -43,8 +43,9 @@ bool modulus_storage_export_settings(const char *path, bool include_secrets);
 /** Import settings JSON from path. Returns false on I/O or parse failure. */
 bool modulus_storage_import_settings(const char *path, bool include_secrets);
 void modulus_storage_clear_ui_cache(void);
+/** True when ≥1 USB device enumerated (VBUS on + host stack). */
 bool modulus_storage_is_usb_host_enabled(void);
-/** Human status for Settings — host-data detect is BSP-pending. */
+/** Human status: "VBUS off" / "No device" / "Device linked" / fail. */
 const char *modulus_storage_usb_host_status_text(void);
 
 #ifdef __cplusplus

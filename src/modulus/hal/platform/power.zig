@@ -90,7 +90,7 @@ pub const Power = struct {
         self.record(.snapshot);
         self.state.brightness = if (self.hooks.get_brightness) |get_b| get_b() else 100;
         self.state.ext5v_was_on = if (self.hooks.ext5v_was_on) |get_e| get_e() else true;
-        self.state.usb5v_was_on = if (self.hooks.usb5v_was_on) |get_u| get_u() else false;
+        self.state.usb5v_was_on = if (self.hooks.usb5v_was_on) |get_u| get_u() else true;
         self.state.wifi_was_on = true;
         self.state.sleep_enter_us = enter_us;
 

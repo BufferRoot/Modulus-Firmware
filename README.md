@@ -257,6 +257,7 @@ zig build tab5-lib    # freestanding Zig library
 | Tab5 C6 + P4 | `.\scripts\flash_tab5_dual.ps1 -C6Port COM6 -P4Port COM5` *(never `-ZigbeeExclusive`)* |
 | NanoH2 | `idf.py -C firmware/nanoh2 flash` (hold BUTTON; enable EXT5V) |
 | S3 bridge | `.\scripts\build_s3_bridge.ps1 -Action flash -Port COM8` |
+| S3 XIAO | same image: USB shell `board xiao` (or factory ` -Board xiao`) then flash |
 
 Re-pack local builds into release zips: `.\scripts\package_flash_images.ps1`.
 

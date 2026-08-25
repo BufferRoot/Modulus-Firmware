@@ -6,8 +6,10 @@ extern "C" {
 #endif
 
 void halt_gpio_init(void);
+void halt_gpio_rebind(int pin);
 void halt_gpio_set(bool assert);
 bool halt_gpio_is_asserted(void);
+int  halt_gpio_pin(void);
 
 #ifdef __cplusplus
 }

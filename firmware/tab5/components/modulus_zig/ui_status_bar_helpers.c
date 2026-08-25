@@ -4,6 +4,10 @@
 void bar_no_scroll(lv_obj_t *obj)
 {
     lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+    /* lv_obj defaults to CLICKABLE — chrome children were eating hits so bar/group
+     * QS gestures (double-tap / long-press) never fired. Re-add CLICKABLE only on
+     * real controls (MPG, WCS, gear, power) and QS gesture targets. */
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_CLICKABLE);
 }
 
 static void bar_label_font(lv_obj_t *lbl, lv_color_t color, const lv_font_t *font)

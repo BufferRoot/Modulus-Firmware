@@ -1122,3 +1122,28 @@ bool modulus_wireless_thread_detach(void)
     modulus_wireless_thread_scan_stop();
     return modulus_wireless_th_detach();
 }
+
+int modulus_wireless_wake_coprocessor_zi(void)
+{
+    return modulus_wireless_wake_coprocessor() ? 1 : 0;
+}
+
+int modulus_wireless_wifi_enable_zi(void)
+{
+    return modulus_wireless_wifi_enable() ? 1 : 0;
+}
+
+int modulus_wireless_ble_enable_zi(void)
+{
+    return modulus_wireless_ble_enable() ? 1 : 0;
+}
+
+int modulus_wireless_zigbee_enable_zi(void)
+{
+    return modulus_wireless_zigbee_enable() ? 1 : 0;
+}
+
+int modulus_wireless_thread_enable_zi(void)
+{
+    return modulus_wireless_thread_enable() ? 1 : 0;
+}

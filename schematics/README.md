@@ -77,7 +77,7 @@ Board: ESP32-S3-MINI-1 on I2C_ESP32_Module / handwheel interface (pads SDA_host 
 | GND | GND | GND | Common |
 
 - Port: **UART1** (UART0 = USB shell)
-- Default baud: **115200** (shell: `baud`, `txgpio`, `rxgpio`; NVS may hold an older rate)
+- Default baud: **921600** (shell: `baud`, `txgpio`, `rxgpio`; NVS may hold an older rate)
 
 ### HALT_host
 
@@ -103,4 +103,18 @@ Driven by Tab5 `MOD_HALT1` / `MOD_HALT0` over ESP-NOW.
 | Peer | Tab5 Settings → Wireless → ESP-NOW → **S3 MAC** |
 | Encrypt | Plain ESP-NOW (PMK breaks CNC path) |
 
-Bring-up: common GND → `uartping` on USB shell → set channel + S3 MAC on Tab5 → Connected.
+Bring-up: common GND → USB shell `board mini1` or `board xiao` (sets pinout, saved) → `uartping` → Tab5 ESP-NOW MAC + channel.
+
+### Seeed XIAO ESP32-S3 (same firmware, `-Board xiao`)
+
+ESP32-S3R8: **do not** use GPIO33–37 (octal PSRAM) or GPIO37 HALT from the MINI-1 map.
+
+| XIAO | GPIO | Flexi-HAL / role |
+|------|------|------------------|
+| **D6 TX** | 43 | USART6_RX (commands) |
+| **D7 RX** | 44 | USART6_TX (status) |
+| **D0** | 1 | HALT_host active LOW |
+| GND | GND | Common |
+| User LED | 21 | TX+RX pulse (active LOW) |
+
+Shell: USB-C Serial/JTAG. Build: `.\scripts\build_s3_bridge.ps1 -Board xiao`

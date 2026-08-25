@@ -252,13 +252,6 @@ fn accrueAbsDelta(meter: *u32, delta: f32) bool {
     return true;
 }
 
-/// Progress 0–100 for UI; null when interval disabled.
-pub fn progressPct(value: u32, limit: u64) ?u8 {
-    if (limit == 0) return null;
-    const lim_u32: u32 = @intCast(@min(limit, std.math.maxInt(u32)));
-    return @intCast(@min(100, (value * 100) / lim_u32));
-}
-
 test "cnc: maintenance travel accrues and rejects glitch" {
     var t: Tracker = .{};
     const idle = cnc_state.MachineStatus{ .state = .idle, .mpos = .{ .x = 0, .y = 0, .z = 0 } };

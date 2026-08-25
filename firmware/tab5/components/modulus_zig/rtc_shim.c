@@ -5,6 +5,7 @@
 #include "rx8130.h"
 #include "i2c_coex_shim.h"
 #include "nvs_shim.h"
+#include "flash_walltime.h"
 
 #include <bsp/m5stack_tab5.h>
 #include "tab5_hw.h"
@@ -15,6 +16,8 @@
 #include <freertos/task.h>
 #include <esp_sntp.h>
 #include <sys/time.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
 
 #include "wireless_shim.h"
@@ -166,6 +169,33 @@ static bool write_rtc_from_local_tm(struct tm *local)
     return true;
 }
 
+/** One-shot: host PC time stamped at flash build → RX8130 + system clock. */
+static void apply_flash_walltime_once(void)
+{
+    if (MODULUS_FLASH_WALL_ID == 0u || !s_ready) {
+        return;
+    }
+
+    char prev[16] = {};
+    if (modulus_nvs_get_str("fw_wall", prev, sizeof(prev))) {
+        const unsigned long seen = strtoul(prev, NULL, 10);
+        if (seen == (unsigned long)MODULUS_FLASH_WALL_ID) {
+            return;
+        }
+    }
+
+    if (!modulus_rtc_set_local_time(MODULUS_FLASH_WALL_YEAR, MODULUS_FLASH_WALL_MON, MODULUS_FLASH_WALL_DAY,
+                                    MODULUS_FLASH_WALL_HOUR, MODULUS_FLASH_WALL_MIN, MODULUS_FLASH_WALL_SEC)) {
+        ESP_LOGW(TAG, "flash walltime apply failed");
+        return;
+    }
+
+    char idbuf[16];
+    snprintf(idbuf, sizeof(idbuf), "%lu", (unsigned long)MODULUS_FLASH_WALL_ID);
+    (void)modulus_nvs_set_str("fw_wall", idbuf);
+    ESP_LOGI(TAG, "RTC set from flash host time id=%s", idbuf);
+}
+
 void modulus_rtc_apply_timezone(void)
 {
     apply_tz_index(modulus_nvs_get_u8("tz_idx", 0));
@@ -215,6 +245,7 @@ void modulus_rtc_init(void)
     modulus_i2c_coex_unlock();
 
     (void)sync_system_from_rtc();
+    apply_flash_walltime_once();
     ESP_LOGI(TAG, "RX8130 ready");
 }
 
@@ -240,7 +271,8 @@ void modulus_rtc_format_time(char *buf, size_t len)
     struct tm t = {};
     modulus_rtc_get_local_time(&t);
     const bool h24 = modulus_nvs_get_u8("t_24h", 1) != 0;
-    strftime(buf, len, h24 ? "%H:%M:%S" : "%I:%M:%S %p", &t);
+    /* Status bar (Zig mirrorBatteryClock) — no seconds. */
+    strftime(buf, len, h24 ? "%H:%M" : "%I:%M %p", &t);
 }
 
 void modulus_rtc_format_date(char *buf, size_t len)

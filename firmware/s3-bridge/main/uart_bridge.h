@@ -32,10 +32,12 @@ int      uart_bridge_rx_gpio();
 uint32_t uart_bridge_bytes_tx();    // bytes sent to grblHAL
 uint32_t uart_bridge_bytes_rx();    // bytes received from grblHAL → Tab5
 uint32_t uart_bridge_uart_tx_fails();
+uint32_t uart_bridge_rx_overruns();
 size_t   uart_bridge_rx_buffered(); // bytes waiting in UART RX driver
 
 bool     uart_bridge_self_check();
 void     uart_bridge_reset_stats();
+void     uart_bridge_apply_board(void);
 
 #ifdef __cplusplus
 }

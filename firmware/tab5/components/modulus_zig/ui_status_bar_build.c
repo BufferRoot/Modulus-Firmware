@@ -45,13 +45,38 @@ static void settings_click_cb(lv_event_t *e)
     modulus_ui_show_settings();
 }
 
+/* Double-tap / long-press blank status chrome opens QS. Decorative children
+ * must NOT be clickable (see bar_no_scroll) or they swallow the hit. */
+enum { BAR_QS_DBL_MS = 500 };
+
+static uint32_t s_bar_qs_last_ms;
+
+static void bar_dbltap_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_SHORT_CLICKED) {
+        return;
+    }
+    const uint32_t now = lv_tick_get();
+    if (s_bar_qs_last_ms != 0 && (now - s_bar_qs_last_ms) <= BAR_QS_DBL_MS) {
+        s_bar_qs_last_ms = 0;
+        modulus_ui_show_quick_settings();
+        return;
+    }
+    s_bar_qs_last_ms = now;
+}
+
 static void bar_long_press_cb(lv_event_t *e)
 {
-    /* Long-press on any blank status-bar area opens quick settings. Only fires
-     * when the press target is the bar itself — presses on child controls
-     * (gear, WCS, MPG, power) never bubble here as LONG_PRESSED on the bar. */
     (void)e;
+    s_bar_qs_last_ms = 0;
     modulus_ui_show_quick_settings();
+}
+
+static void bar_bind_qs_gestures(lv_obj_t *obj)
+{
+    lv_obj_add_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(obj, bar_dbltap_cb, LV_EVENT_SHORT_CLICKED, NULL);
+    lv_obj_add_event_cb(obj, bar_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
 }
 
 static void power_click_cb(lv_event_t *e)
@@ -69,9 +94,8 @@ static lv_obj_t *bar_row_group(lv_obj_t *parent, lv_flex_align_t main_align)
     lv_obj_set_flex_flow(grp, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(grp, main_align, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(grp, MOD_UI_SPACE_MD, 0);
-    /* Blank space between stats belongs to the group — long-press there also
-     * opens quick settings (groups are clickable by default in LVGL 9). */
-    lv_obj_add_event_cb(grp, bar_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
+    /* Blank gaps + non-clickable stats (clock/feed) live on the group. */
+    bar_bind_qs_gestures(grp);
     return grp;
 }
 
@@ -91,7 +115,7 @@ void bar_build(lv_obj_t *parent, status_bar_t *out)
     lv_obj_set_style_pad_hor(bar, MOD_UI_SPACE_LG, 0);
     lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_add_event_cb(bar, bar_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
+    bar_bind_qs_gestures(bar);
 
     lv_obj_t *left = bar_row_group(bar, LV_FLEX_ALIGN_START);
 
@@ -182,7 +206,6 @@ void bar_build(lv_obj_t *parent, status_bar_t *out)
     lv_obj_set_style_bg_opa(out->wifi_badge, LV_OPA_COVER, 0);
     lv_obj_align(out->wifi_badge, LV_ALIGN_TOP_RIGHT, 0, 0);
     lv_obj_add_flag(out->wifi_badge, LV_OBJ_FLAG_HIDDEN);
-    modulus_ui_touch_ensure_min(wifi_wrap);
     out->ble_icon = modulus_ui_icon_create(out->wireless_row, MOD_UI_ICON_BLUETOOTH,
                                            MOD_UI_ICON_SZ_24);
     modulus_ui_icon_recolor(out->ble_icon, modulus_ui_color_icon_chrome());
@@ -233,7 +256,7 @@ void bar_build(lv_obj_t *parent, status_bar_t *out)
     modulus_ui_apply_pressed_state_layer(settings_btn);
     modulus_ui_bind_press_morph(settings_btn, MOD_UI_SHAPE_FULL, MOD_UI_SHAPE_MD);
     /* SHORT_CLICKED (not CLICKED): a released long-press must NOT also open the
-     * settings shell — quick settings now lives on blank-bar long-press. */
+     * settings shell — QS opens via blank-bar double-tap / long-press. */
     lv_obj_add_event_cb(settings_btn, settings_click_cb, LV_EVENT_SHORT_CLICKED, NULL);
     out->settings_icon = modulus_ui_icon_create(settings_btn, MOD_UI_ICON_GEAR_SIX, MOD_UI_ICON_SZ_40);
     lv_obj_center(out->settings_icon);

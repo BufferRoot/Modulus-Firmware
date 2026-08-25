@@ -70,6 +70,7 @@ try {
     Push-Location "$RepoRoot\firmware\tab5"
     try {
         & "$PSScriptRoot\patch_tab5_idf6_deps.ps1"
+        & "$PSScriptRoot\write_flash_walltime.ps1" -RepoRoot $RepoRoot
         Write-Host "==> idf.py build"
         idf.py build
         if ($LASTEXITCODE -ne 0) {

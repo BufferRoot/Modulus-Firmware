@@ -63,8 +63,21 @@ static float s_ema_current = 0.0f;
 static bool s_ema_primed = false;
 static uint8_t s_smoothed_pct = 0;
 
+/* Coulomb SOC (mAh) — seeded from voltage, learned while charging. */
+static float s_soc_mah = 0.0f;
+static bool s_soc_inited = false;
+static uint8_t s_chg_hold_streak = 0;
+
 static const float k_ema_alpha = 0.08f;
 static const uint8_t k_pct_max_step = 1;
+static const float k_poll_sec_awake = 2.0f;
+static const float k_poll_sec_sleep = 10.0f;
+/* INA226 + = into load; pack charge current is -INA. */
+static const float k_pack_charge_a = 0.025f;
+static const float k_full_v = 8.25f;
+static const float k_full_i_a = 0.06f;
+static const uint8_t k_chg_hold_samples = 4;
+static const float k_chg_hold_min_v = 7.85f;
 
 typedef struct {
     float v;
@@ -101,6 +114,74 @@ static float pack_capacity_mah(uint8_t idx)
         idx = 0;
     }
     return (float)k_packs[idx].mah;
+}
+
+/** Positive when current flows into the battery pack (charging). */
+static float pack_charge_a(float i_raw)
+{
+    return -i_raw;
+}
+
+static void soc_seed_from_voltage(float v)
+{
+    s_soc_mah = s_capacity_mah * (float)voltage_to_percent(v) / 100.0f;
+    s_soc_inited = true;
+}
+
+static uint8_t compute_soc_percent(float v, float i_raw, uint8_t chg, float dt_sec)
+{
+    const float i_pack = pack_charge_a(i_raw);
+    if (!s_soc_inited) {
+        soc_seed_from_voltage(v);
+    }
+
+    if (dt_sec > 0.0f) {
+        const float dmah = i_pack * 1000.0f * (dt_sec / 3600.0f);
+        if (chg == 1 && i_pack > 0.008f) {
+            s_soc_mah += dmah;
+            if (s_soc_mah > s_capacity_mah * 0.995f) {
+                s_soc_mah = s_capacity_mah * 0.995f;
+            }
+        } else if (chg == 0 && i_pack < -0.008f) {
+            s_soc_mah += dmah;
+            if (s_soc_mah < 0.0f) {
+                s_soc_mah = 0.0f;
+            }
+        } else if (chg == 2) {
+            s_soc_mah = s_capacity_mah;
+        } else if (fabsf(i_pack) < 0.03f) {
+            const float v_soc = s_capacity_mah * (float)voltage_to_percent(v) / 100.0f;
+            s_soc_mah = s_soc_mah * 0.85f + v_soc * 0.15f;
+        }
+    }
+
+    const uint8_t v_pct = voltage_to_percent(v);
+    float pct_f = (s_soc_mah / s_capacity_mah) * 100.0f;
+
+    if (chg == 1) {
+        /* Terminal voltage lags SOC while charging — trust coulomb, floor at V-table. */
+        pct_f = fmaxf(pct_f, (float)v_pct);
+        if (pct_f > 99.0f) {
+            pct_f = 99.0f;
+        }
+    } else if (chg == 2) {
+        pct_f = 100.0f;
+    } else if (fabsf(i_pack) >= 0.05f) {
+        /* Loaded discharge: voltage sags; blend toward coulomb. */
+        pct_f = fmaxf((float)v_pct, pct_f - 8.0f);
+        pct_f = fminf(pct_f, (float)v_pct + 8.0f);
+    } else {
+        pct_f = (float)v_pct;
+        s_soc_mah = s_capacity_mah * pct_f / 100.0f;
+    }
+
+    if (pct_f < 0.0f) {
+        pct_f = 0.0f;
+    }
+    if (pct_f > 100.0f) {
+        pct_f = 100.0f;
+    }
+    return (uint8_t)(pct_f + 0.5f);
 }
 
 static esp_err_t ina226_write_reg(uint8_t reg, uint16_t val)
@@ -249,24 +330,44 @@ bool modulus_battery_is_adaptive(void)
     return s_adaptive;
 }
 
-static uint8_t detect_charge_state(float voltage, float current)
+static uint8_t detect_charge_state(float voltage, float current, uint8_t prev)
 {
     if (voltage < 5.0f) {
+        s_chg_hold_streak = 0;
         return 3;
     }
     if (!s_charge_en) {
+        s_chg_hold_streak = 0;
         return 0;
     }
 
-    /* IP2326 CHG_STAT via PI4IOE2 P6: HIGH = charging (C++ bsp_get_charge_status). */
+    const float i_pack = pack_charge_a(current);
+    /* IP2326 CHG_STAT via PI4IOE2 P6: HIGH = actively charging. */
     const bool hw_charging = tab5_pi4ioe_get_charge_status();
-    if (hw_charging) {
-        if (voltage >= 8.30f && current < 0.20f) {
+    const bool energy_in = i_pack > k_pack_charge_a;
+    const bool charging = hw_charging || energy_in;
+
+    if (charging) {
+        s_chg_hold_streak = 0;
+        if (voltage >= k_full_v && i_pack < k_full_i_a) {
             return 2;
         }
         return 1;
     }
-    if (voltage >= 8.30f && current < 0.15f) {
+
+    /* CHG_STAT drops early on small packs (e.g. 2200 mAh) while input still
+     * present — hold charging briefly so UI does not flip to discharge at ~75%. */
+    if ((prev == 1 || prev == 2) && voltage >= k_chg_hold_min_v &&
+        s_chg_hold_streak < k_chg_hold_samples) {
+        s_chg_hold_streak++;
+        if (voltage >= k_full_v && fabsf(i_pack) < 0.10f) {
+            return 2;
+        }
+        return 1;
+    }
+    s_chg_hold_streak = 0;
+
+    if (voltage >= 8.30f && fabsf(i_pack) < 0.15f) {
         return 2;
     }
     return 0;
@@ -286,40 +387,54 @@ static void battery_sample_locked(void)
         s_ema_voltage = v_raw;
         s_ema_current = i_raw;
         s_smoothed_pct = voltage_to_percent(v_raw);
+        soc_seed_from_voltage(v_raw);
         s_ema_primed = true;
     } else {
         s_ema_voltage += k_ema_alpha * (v_raw - s_ema_voltage);
         s_ema_current += k_ema_alpha * (i_raw - s_ema_current);
     }
 
-    uint8_t raw_pct = voltage_to_percent(s_ema_voltage);
-    if (raw_pct > s_smoothed_pct) {
-        uint8_t step = raw_pct - s_smoothed_pct;
-        s_smoothed_pct += (step > k_pct_max_step) ? k_pct_max_step : step;
-    } else if (raw_pct < s_smoothed_pct) {
-        uint8_t step = s_smoothed_pct - raw_pct;
-        s_smoothed_pct -= (step > k_pct_max_step) ? k_pct_max_step : step;
+    const float dt_sec = modulus_display_is_sleeping() ? k_poll_sec_sleep : k_poll_sec_awake;
+    const uint8_t prev_chg = s_status.charge_state;
+    const uint8_t chg = detect_charge_state(s_ema_voltage, s_ema_current, prev_chg);
+    if (chg != prev_chg) {
+        ESP_LOGI(TAG, "charge state %u -> %u (V=%.2f I=%.3fA hw=%d)",
+                 (unsigned)prev_chg, (unsigned)chg, s_ema_voltage, pack_charge_a(s_ema_current),
+                 tab5_pi4ioe_get_charge_status() ? 1 : 0);
     }
 
-    const uint8_t chg = detect_charge_state(s_ema_voltage, s_ema_current);
+    uint8_t raw_pct = compute_soc_percent(s_ema_voltage, s_ema_current, chg, dt_sec);
+    if (chg == 1 || chg == 2) {
+        if (raw_pct < s_smoothed_pct) {
+            raw_pct = s_smoothed_pct;
+        }
+    }
+    /* Noise: ±1%/sample. Boot/load steps >5%: snap — slow 1% ramp from a
+     * bad seed (or cold INA) took tens of seconds to reach truth. */
+    const int delta = (int)raw_pct - (int)s_smoothed_pct;
+    if (delta > 5 || delta < -5) {
+        s_smoothed_pct = raw_pct;
+    } else if (raw_pct > s_smoothed_pct) {
+        s_smoothed_pct += k_pct_max_step;
+    } else if (raw_pct < s_smoothed_pct && chg != 1 && chg != 2) {
+        s_smoothed_pct -= k_pct_max_step;
+    }
 
     int32_t tte = -1;
     int32_t ttf = -1;
-    const float rate_mA = fabsf(s_ema_current) * 1000.0f;
-    if (chg == 0 && rate_mA > 10.0f) {
+    const float i_pack = pack_charge_a(s_ema_current);
+    const float rate_mA = fabsf(i_pack) * 1000.0f;
+    if (chg == 0 && i_pack < -0.01f && rate_mA > 10.0f) {
         const float remaining = s_capacity_mah * (float)s_smoothed_pct / 100.0f;
         tte = (int32_t)(remaining / rate_mA * 60.0f);
         if (tte < 0) {
             tte = 0;
         }
-    } else if (chg == 1 && rate_mA > 10.0f) {
+    } else if (chg == 1 && i_pack > 0.01f && rate_mA > 10.0f) {
         const float needed = s_capacity_mah * (float)(100 - s_smoothed_pct) / 100.0f;
-        const float charge_rate = rate_mA * 0.5f;
-        if (charge_rate > 10.0f) {
-            ttf = (int32_t)(needed / charge_rate * 60.0f);
-            if (ttf < 0) {
-                ttf = 0;
-            }
+        ttf = (int32_t)(needed / rate_mA * 60.0f);
+        if (ttf < 0) {
+            ttf = 0;
         }
     }
 
@@ -383,7 +498,17 @@ void modulus_battery_init(void)
     }
 
     i2c_master_bus_handle_t bus = bsp_i2c_get_handle();
-    s_ina_ok = bus && ina226_begin(bus);
+    if (bus && modulus_i2c_coex_lock(5000)) {
+        s_ina_ok = ina226_begin(bus);
+        modulus_i2c_coex_unlock();
+    } else {
+        s_ina_ok = false;
+        if (!bus) {
+            ESP_LOGW(TAG, "INA226 init: no I2C bus");
+        } else {
+            ESP_LOGW(TAG, "INA226 init: I2C coex timeout");
+        }
+    }
     if (s_ina_ok) {
         ESP_LOGI(TAG, "INA226 ready, bus voltage: %.2fV", ina226_read_bus_voltage());
     } else {
@@ -451,6 +576,7 @@ void modulus_battery_set_pack_type(uint8_t idx)
     }
     s_pack_type = idx;
     s_capacity_mah = pack_capacity_mah(idx);
+    s_soc_inited = false;
     modulus_nvs_set_u8("bat_type", idx);
 }
 

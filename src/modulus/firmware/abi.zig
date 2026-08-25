@@ -8,13 +8,16 @@ const abi_guard = @import("abi_guard.zig");
 const console_log_mod = @import("../cnc/console_log.zig");
 const ota_mod = @import("ota.zig");
 
+const modulus = @import("../core/modulus.zig");
+
 /// Keep in sync with `core/modulus.zig`.
-const version_cstr: [*:0]const u8 = "2.0";
+const version_z = modulus.version ++ "\x00";
+const version_cstr: [*:0]const u8 = version_z[0..modulus.version.len :0].ptr;
 
 const zig_toolchain_version_storage = @import("builtin").zig_version_string ++ "\x00";
 
 /// Bump when device ABI wiring changes (22 = bool exports → c_int 0/1).
-pub const abi_epoch: u32 = 22;
+pub const abi_epoch: u32 = 23;
 
 inline fn boolCi(v: bool) c_int {
     return @import("abi_bool.zig").asCInt(v);
@@ -53,9 +56,9 @@ export fn modulus_zig_event_dispatch_spawned() c_int {
 }
 
 test "firmware: abi exports version" {
-    try std.testing.expectEqualStrings("2.0", std.mem.span(modulus_zig_version()));
+    try std.testing.expectEqualStrings(modulus.version, std.mem.span(modulus_zig_version()));
     try std.testing.expect(std.mem.span(modulus_zig_toolchain_version()).len > 0);
-    try std.testing.expectEqual(@as(u32, 22), modulus_zig_abi_epoch());
+    try std.testing.expectEqual(@as(u32, 23), modulus_zig_abi_epoch());
 }
 
 test "firmware: abi ota stub honest" {
@@ -197,6 +200,11 @@ export fn modulus_zig_cmd_spindle_override(delta: i8) void {
     device_runtime.cmdSpindleOverride(delta);
 }
 
+export fn modulus_zig_cmd_rapid_override(pct: u8) void {
+    if (comptime !build_options.device_nvs) return;
+    device_runtime.cmdRapidOverride(pct);
+}
+
 export fn modulus_zig_cmd_home_axis(axis_idx: u8) void {
     if (comptime !build_options.device_nvs) return;
     device_runtime.cmdHomeAxis(axis_idx);
@@ -204,12 +212,12 @@ export fn modulus_zig_cmd_home_axis(axis_idx: u8) void {
 
 export fn modulus_zig_cmd_zero_axis(axis_idx: u8) void {
     if (comptime !build_options.device_nvs) return;
-    device_runtime.cmdZeroAxis(axis_idx);
+    _ = device_runtime.cmdZeroAxis(axis_idx);
 }
 
 export fn modulus_zig_cmd_zero_all() void {
     if (comptime !build_options.device_nvs) return;
-    device_runtime.cmdZeroAll();
+    _ = device_runtime.cmdZeroAll();
 }
 
 export fn modulus_zig_cycle_wcs() void {

@@ -5,6 +5,8 @@
 #include "display_shim.h"
 #include "imu_shim.h"
 #include "security_shim.h"
+#include "touch_shim.h"
+#include "ui_engine_flush.h"
 
 #include <esp_check.h>
 #include <esp_heap_caps.h>
@@ -26,9 +28,11 @@ static bool s_dimmed = false;
 static bool s_sleeping = false;
 static uint16_t s_dim_timeout = 0;
 static uint16_t s_sleep_timeout = 0;
-static lv_timer_t *s_activity_tmr = NULL;
 static int64_t s_wake_hold_until_us = 0;
 static int64_t s_sleep_start_us = 0;
+static bool s_zig_owns = false;
+static esp_timer_handle_t s_activity_esp = NULL;
+static int64_t s_last_activity_us = 0;
 
 static const int64_t k_wake_hold_us = 30LL * 1000000LL;
 
@@ -45,13 +49,22 @@ static uint32_t effective_inactive_ms(void)
     if (s_wake_hold_until_us != 0) {
         s_wake_hold_until_us = 0;
     }
-    return s_disp ? lv_display_get_inactive_time(s_disp) : 0;
+    if (s_zig_owns || s_disp == NULL) {
+        const int64_t now = esp_timer_get_time();
+        if (s_last_activity_us == 0) {
+            s_last_activity_us = now;
+        }
+        const int64_t dt = now - s_last_activity_us;
+        return dt > 0 ? (uint32_t)(dt / 1000) : 0;
+    }
+    return lv_display_get_inactive_time(s_disp);
 }
 
 static void wake_from_idle(void)
 {
     s_wake_hold_until_us = esp_timer_get_time() + k_wake_hold_us;
-    if (s_disp) {
+    s_last_activity_us = esp_timer_get_time();
+    if (s_disp && !s_zig_owns) {
         lv_display_trigger_activity(s_disp);
     }
 
@@ -71,10 +84,10 @@ static void wake_from_idle(void)
     }
 }
 
-static void activity_check_cb(lv_timer_t *timer)
+static void activity_check_cb(void *arg)
 {
-    (void)timer;
-    if (!s_disp) {
+    (void)arg;
+    if (!s_ready) {
         return;
     }
 
@@ -119,11 +132,7 @@ static void activity_check_cb(lv_timer_t *timer)
         }
         return;
     }
-
-    if (s_sleeping || s_dimmed) {
-        ESP_LOGI(TAG, "Display woken by touch");
-        wake_from_idle();
-    }
+    /* Wake only via note_user_activity / IMU — not on every timer tick while dimmed. */
 }
 
 static bool activity_monitor_needed(void)
@@ -133,13 +142,25 @@ static bool activity_monitor_needed(void)
 
 static void ensure_activity_timer(void)
 {
-    if (s_activity_tmr || !s_ready) {
+    if (!s_ready || !activity_monitor_needed()) {
         return;
     }
-    if (!activity_monitor_needed()) {
+    if (s_activity_esp) {
         return;
     }
-    s_activity_tmr = lv_timer_create(activity_check_cb, 500, NULL);
+    const esp_timer_create_args_t args = {
+        .callback = &activity_check_cb,
+        .name = "disp_act",
+    };
+    if (esp_timer_create(&args, &s_activity_esp) != ESP_OK) {
+        ESP_LOGE(TAG, "activity esp_timer create failed");
+        s_activity_esp = NULL;
+        return;
+    }
+    if (s_last_activity_us == 0) {
+        s_last_activity_us = esp_timer_get_time();
+    }
+    esp_timer_start_periodic(s_activity_esp, 500000); // 500 ms
 }
 
 void modulus_display_refresh_activity_monitor(void)
@@ -151,9 +172,10 @@ void modulus_display_refresh_activity_monitor(void)
         ensure_activity_timer();
         return;
     }
-    if (s_activity_tmr) {
-        lv_timer_delete(s_activity_tmr);
-        s_activity_tmr = NULL;
+    if (s_activity_esp) {
+        esp_timer_stop(s_activity_esp);
+        esp_timer_delete(s_activity_esp);
+        s_activity_esp = NULL;
     }
 }
 
@@ -171,17 +193,38 @@ bool modulus_display_init(uint32_t stripe_lines, bool flipped, uint8_t brightnes
     ESP_RETURN_ON_FALSE(tab5_pi4ioe_init(i2c_bus), false, TAG, "PI4IOE init failed");
 
     lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+#if CONFIG_MODULUS_ZIG_UI_ENGINE
+    /* Zig owns paint — thin LVGL port only for BSP panel bind / flush ctx. */
+    lvgl_cfg.task_stack = 8192;
+    lvgl_cfg.task_max_sleep_ms = 1000;
+    lvgl_cfg.timer_period_ms = 50;
+#else
     /* 16 KiB overflowed under 1280×720 sw_rotate when Quick Settings /
      * wireless pages ran lv_obj_clean+rebuild inside input handlers (Zigbee
      * tile tap + 1 Hz state refresh) — stack guard fault after IDLE0 WDT. */
     lvgl_cfg.task_stack = 24576;
+    lvgl_cfg.task_max_sleep_ms = 33;
+#endif
     lvgl_cfg.task_priority = 5;
     /* ESP_LVGL_PORT_INIT_CONFIG defaults task_affinity to -1 (any core) —
      * pin to Core 0 so taskLVGL never migrates onto Core 1 and competes with
      * sys_task/serial_rx (sovereign-core contract: Core 0 = UI, Core 1 = CNC). */
     lvgl_cfg.task_affinity = 0;
-    lvgl_cfg.task_max_sleep_ms = 33;
 
+#if CONFIG_MODULUS_ZIG_UI_ENGINE
+    /* Minimal DMA stripe — Zig paints the DPI FB directly; LVGL buf only for bind. */
+    const uint32_t stripe = (stripe_lines > 0 && stripe_lines < 40) ? stripe_lines : 24;
+    bsp_display_cfg_t cfg = {
+        .lvgl_port_cfg = lvgl_cfg,
+        .buffer_size = BSP_LCD_H_RES * stripe,
+        .double_buffer = false,
+        .flags = {
+            .buff_dma = true,
+            .buff_spiram = true,
+            .sw_rotate = true,
+        },
+    };
+#else
     const uint32_t stripe = (stripe_lines > 0) ? stripe_lines : 120;
     bsp_display_cfg_t cfg = {
         .lvgl_port_cfg = lvgl_cfg,
@@ -195,6 +238,7 @@ bool modulus_display_init(uint32_t stripe_lines, bool flipped, uint8_t brightnes
             .sw_rotate = true,
         },
     };
+#endif
 
     s_disp = bsp_display_start_with_config(&cfg);
     if (s_disp == NULL) {
@@ -232,6 +276,22 @@ bool modulus_display_init(uint32_t stripe_lines, bool flipped, uint8_t brightnes
     ESP_LOGI(TAG, "Heap after display init: internal free=%u KiB (max blk %u), PSRAM free=%u KiB (max blk %u)",
              (unsigned)(internal_free / 1024), (unsigned)(internal_largest / 1024),
              (unsigned)(psram_free / 1024), (unsigned)(psram_largest / 1024));
+    /* Bind the DPI scanout buffer the Zig engine paints into. */
+    modulus_ui_engine_flush_try_bind_from_lvgl(s_disp);
+#if CONFIG_MODULUS_ZIG_UI_ENGINE
+    if (!modulus_ui_engine_flush_ready()) {
+        ESP_LOGE(TAG, "BSP panel/DPI bind failed — Zig UI cannot paint");
+        bsp_display_unlock();
+        s_ready = false;
+        s_disp = NULL;
+        return false;
+    }
+    if (!modulus_ui_engine_flush_dual()) {
+        ESP_LOGW(TAG, "BSP gave single DPI FB — expect tear; want CONFIG_BSP_LCD_DPI_BUFFER_NUMS≥2");
+    } else {
+        ESP_LOGI(TAG, "BSP dual DPI FB ready — Zig tear-free flip path");
+    }
+#endif
     modulus_display_refresh_activity_monitor();
     /* Lock held — Zig boot calls unlock at display_unlock phase. */
     return true;
@@ -289,6 +349,17 @@ void modulus_display_unlock(void)
         return;
     }
     bsp_display_unlock();
+#if CONFIG_MODULUS_ZIG_UI_ENGINE
+    /* Zig paints splash then lights the panel in zig_ui_task. Unlock must not
+     * turn on backlight over an empty LVGL screen (white flash before splash). */
+    (void)s_zig_owns;
+    return;
+#else
+    if (s_zig_owns) {
+        /* Zig owns MIPI — do not kick LVGL refr. */
+        bsp_display_backlight_on();
+        return;
+    }
     /* First frame after early boot splash — LVGL task was blocked on lock until now. */
     if (s_disp && bsp_display_lock(0)) {
         lv_obj_t *scr = lv_screen_active();
@@ -299,6 +370,40 @@ void modulus_display_unlock(void)
         bsp_display_backlight_on();
         bsp_display_unlock();
     }
+#endif
+}
+
+bool modulus_display_zig_owns(void)
+{
+    return s_zig_owns;
+}
+
+void modulus_display_zig_takeover(void)
+{
+    if (!s_ready || s_zig_owns) {
+        return;
+    }
+    s_zig_owns = true;
+    s_last_activity_us = esp_timer_get_time();
+    /* Zig polls touch via modulus_touch_poll_for_zig; stop LVGL's indev
+     * timer so the two paths don't fight over the I2C bus. */
+    modulus_touch_pause_for_zig();
+    /* Stop LVGL tick timer — Zig owns scanout; taskLVGL then mostly sleeps. */
+    if (lvgl_port_stop() != ESP_OK) {
+        ESP_LOGW(TAG, "lvgl_port_stop failed (non-fatal)");
+    }
+    /* Activity monitor is esp_timer — keep running under Zig ownership. */
+    modulus_display_refresh_activity_monitor();
+    ESP_LOGI(TAG, "Zig UI engine owns scanout (LVGL tick stopped)");
+}
+
+void modulus_display_resume_activity_monitor(void)
+{
+    if (!s_ready) {
+        return;
+    }
+    s_last_activity_us = esp_timer_get_time();
+    modulus_display_refresh_activity_monitor();
 }
 
 void modulus_display_set_flip(bool flipped)
@@ -310,8 +415,10 @@ void modulus_display_set_flip(bool flipped)
         return;
     }
     lv_display_set_rotation(s_disp, flipped ? LV_DISPLAY_ROTATION_270 : LV_DISPLAY_ROTATION_90);
-    lv_obj_invalidate(lv_screen_active());
-    lv_obj_invalidate(lv_layer_top());
+    if (!s_zig_owns) {
+        lv_obj_invalidate(lv_screen_active());
+        lv_obj_invalidate(lv_layer_top());
+    }
     bsp_display_unlock();
 }
 
@@ -329,8 +436,12 @@ void modulus_display_start_activity_monitor(void)
 
 void modulus_display_note_user_activity(void)
 {
-    if (s_disp) {
+    s_last_activity_us = esp_timer_get_time();
+    if (s_disp && !s_zig_owns) {
         lv_display_trigger_activity(s_disp);
+    }
+    if (s_sleeping || s_dimmed) {
+        wake_from_idle();
     }
 }
 

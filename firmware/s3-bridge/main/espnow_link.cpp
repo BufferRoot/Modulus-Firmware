@@ -2,7 +2,7 @@
  * ESP32-S3 ESP-NOW <-> UART Bridge — ESP-NOW link
  *
  * Tab5 -> inbound queue -> worker -> uart_bridge_send -> grblHAL
- * grblHAL -> uart_rx_task -> espnow_send_to_tab5 -> Tab5
+ * grblHAL -> uart_rx_task -> outbound queue -> worker -> espnow_send_to_tab5
  */
 #include "espnow_link.h"
 #include "uart_bridge.h"
@@ -44,15 +44,21 @@ static std::atomic<uint32_t> s_rx_count{0};
 static std::atomic<uint32_t> s_tx_count{0};
 static std::atomic<uint32_t> s_fail_count{0};
 static std::atomic<uint32_t> s_inbound_drops{0};
+static std::atomic<uint32_t> s_outbound_drops{0};
 static SemaphoreHandle_t     s_tx_lock = nullptr; /* mutex: one in-flight send */
 static SemaphoreHandle_t     s_tx_done = nullptr; /* binary: send-cb completion */
 static SemaphoreHandle_t     s_peer_mu = nullptr; /* mutex: MAC / peer table */
 static QueueHandle_t         s_inbound_q = nullptr;
+static QueueHandle_t         s_outbound_q = nullptr;
 static bool                  s_inbound_worker_started = false;
-/* MOD_ACK must not block inside esp_now recv cb — defer to task context. */
+static bool                  s_outbound_worker_started = false;
+/* MOD_ACK / peer learn must not block inside esp_now recv cb. */
 static portMUX_TYPE          s_ack_spin = portMUX_INITIALIZER_UNLOCKED;
 static bool                  s_ack_pending = false;
 static uint8_t               s_ack_mac[6] = {};
+static portMUX_TYPE          s_learn_spin = portMUX_INITIALIZER_UNLOCKED;
+static bool                  s_learn_pending = false;
+static uint8_t               s_learn_mac[6] = {};
 
 static void mac_to_str(const uint8_t* mac, char* out)
 {
@@ -167,7 +173,7 @@ static bool espnow_send_chunk(const uint8_t* mac, const uint8_t* data, size_t le
         return false;
     }
 
-    if (xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(2000)) != pdTRUE) {
+    if (xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(ESPNOW_TX_LOCK_MS)) != pdTRUE) {
         s_fail_count.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
@@ -182,7 +188,7 @@ static bool espnow_send_chunk(const uint8_t* mac, const uint8_t* data, size_t le
         return false;
     }
 
-    if (xSemaphoreTake(s_tx_done, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    if (xSemaphoreTake(s_tx_done, pdMS_TO_TICKS(ESPNOW_TX_WAIT_MS)) != pdTRUE) {
         ESP_LOGW(TAG, "TX timeout — dropping chunk (%u bytes)", (unsigned)len);
         s_fail_count.fetch_add(1, std::memory_order_relaxed);
         xSemaphoreGive(s_tx_lock);
@@ -191,6 +197,28 @@ static bool espnow_send_chunk(const uint8_t* mac, const uint8_t* data, size_t le
 
     xSemaphoreGive(s_tx_lock);
     return true;
+}
+
+static void defer_learn_mac(const uint8_t* mac)
+{
+    taskENTER_CRITICAL(&s_learn_spin);
+    memcpy(s_learn_mac, mac, 6);
+    s_learn_pending = true;
+    taskEXIT_CRITICAL(&s_learn_spin);
+}
+
+static void apply_deferred_learn(void)
+{
+    uint8_t mac[6];
+    bool do_it = false;
+    taskENTER_CRITICAL(&s_learn_spin);
+    if (s_learn_pending) {
+        memcpy(mac, s_learn_mac, 6);
+        s_learn_pending = false;
+        do_it = true;
+    }
+    taskEXIT_CRITICAL(&s_learn_spin);
+    if (do_it) learn_tab5_mac(mac);
 }
 
 static void request_mod_ack(const uint8_t* dest_mac)
@@ -242,9 +270,22 @@ static void inbound_worker(void*)
 {
     inbound_pkt_t pkt;
     for (;;) {
+        apply_deferred_learn();
         flush_pending_mod_ack();
         if (xQueueReceive(s_inbound_q, &pkt, pdMS_TO_TICKS(20)) == pdTRUE) {
             uart_bridge_send(pkt.data, pkt.len);
+        }
+    }
+}
+
+static void outbound_worker(void*)
+{
+    inbound_pkt_t pkt;
+    for (;;) {
+        apply_deferred_learn();
+        flush_pending_mod_ack();
+        if (xQueueReceive(s_outbound_q, &pkt, pdMS_TO_TICKS(20)) == pdTRUE) {
+            (void)espnow_send_to_tab5(pkt.data, pkt.len);
         }
     }
 }
@@ -258,26 +299,26 @@ static void on_recv(const esp_now_recv_info_t* info,
 
     if (len == BRIDGE_MOD_PROBE_LEN &&
         memcmp(data, BRIDGE_MOD_PROBE, BRIDGE_MOD_PROBE_LEN) == 0) {
-        learn_tab5_mac(info->src_addr);
+        defer_learn_mac(info->src_addr);
         request_mod_ack(info->src_addr);
         return;
     }
 
     if (len == BRIDGE_MOD_HALT_LEN &&
         memcmp(data, BRIDGE_MOD_HALT_ON, BRIDGE_MOD_HALT_LEN) == 0) {
-        learn_tab5_mac(info->src_addr);
+        defer_learn_mac(info->src_addr);
         halt_gpio_set(true);
         return;
     }
 
     if (len == BRIDGE_MOD_HALT_LEN &&
         memcmp(data, BRIDGE_MOD_HALT_OFF, BRIDGE_MOD_HALT_LEN) == 0) {
-        learn_tab5_mac(info->src_addr);
+        defer_learn_mac(info->src_addr);
         halt_gpio_set(false);
         return;
     }
 
-    learn_tab5_mac(info->src_addr);
+    defer_learn_mac(info->src_addr);
 
     s_rx_count.fetch_add(1, std::memory_order_relaxed);
     ESP_LOGD(TAG, "RX %d bytes from Tab5 -> queue", len);
@@ -332,6 +373,26 @@ bool espnow_send_to_tab5(const uint8_t* data, size_t len)
     return true;
 }
 
+bool espnow_queue_to_tab5(const uint8_t* data, size_t len)
+{
+    if (!s_outbound_q || !data || len == 0 || len > ESPNOW_MAX_PAYLOAD) {
+        return false;
+    }
+
+    inbound_pkt_t pkt = {};
+    pkt.len = (uint16_t)len;
+    memcpy(pkt.data, data, len);
+
+    if (xQueueSend(s_outbound_q, &pkt, 0) == pdTRUE) {
+        return true;
+    }
+
+    inbound_pkt_t junk;
+    (void)xQueueReceive(s_outbound_q, &junk, 0);
+    s_outbound_drops.fetch_add(1, std::memory_order_relaxed);
+    return xQueueSend(s_outbound_q, &pkt, 0) == pdTRUE;
+}
+
 void espnow_init()
 {
     bridge_nvs_t nvs = bridge_nvs_open(NVS_READONLY);
@@ -374,6 +435,8 @@ void espnow_init()
 
     s_inbound_q = xQueueCreate(ESPNOW_QUEUE_DEPTH, sizeof(inbound_pkt_t));
     ESP_ERROR_CHECK(s_inbound_q ? ESP_OK : ESP_ERR_NO_MEM);
+    s_outbound_q = xQueueCreate(ESPNOW_OUTBOUND_DEPTH, sizeof(inbound_pkt_t));
+    ESP_ERROR_CHECK(s_outbound_q ? ESP_OK : ESP_ERR_NO_MEM);
 
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_recv));
@@ -391,17 +454,22 @@ void espnow_init()
 
 void espnow_flush_pending_ack()
 {
+    apply_deferred_learn();
     flush_pending_mod_ack();
 }
 
 void espnow_start_inbound_worker()
 {
-    if (!s_inbound_q || s_inbound_worker_started) {
-        return;
+    if (s_inbound_q && !s_inbound_worker_started) {
+        xTaskCreatePinnedToCore(inbound_worker, "espnow_in",
+                                4096, nullptr, 6, nullptr, 1);
+        s_inbound_worker_started = true;
     }
-    xTaskCreatePinnedToCore(inbound_worker, "espnow_in",
-                            4096, nullptr, 6, nullptr, 1);
-    s_inbound_worker_started = true;
+    if (s_outbound_q && !s_outbound_worker_started) {
+        xTaskCreatePinnedToCore(outbound_worker, "espnow_out",
+                                4096, nullptr, 6, nullptr, 1);
+        s_outbound_worker_started = true;
+    }
 }
 
 bool espnow_set_channel(uint8_t ch)
@@ -428,8 +496,9 @@ bool espnow_set_channel(uint8_t ch)
 
 bool espnow_self_check()
 {
-    if (!s_espnow_ready || !s_inbound_q || !s_tx_lock || !s_tx_done ||
-        !s_peer_mu || !s_inbound_worker_started) {
+    if (!s_espnow_ready || !s_inbound_q || !s_outbound_q || !s_tx_lock ||
+        !s_tx_done || !s_peer_mu || !s_inbound_worker_started ||
+        !s_outbound_worker_started) {
         return false;
     }
 
@@ -447,6 +516,7 @@ void espnow_reset_stats()
     s_tx_count.store(0, std::memory_order_relaxed);
     s_fail_count.store(0, std::memory_order_relaxed);
     s_inbound_drops.store(0, std::memory_order_relaxed);
+    s_outbound_drops.store(0, std::memory_order_relaxed);
 }
 
 uint8_t espnow_get_channel()
@@ -482,4 +552,14 @@ uint32_t espnow_inbound_drops()
 uint32_t espnow_inbound_pending()
 {
     return s_inbound_q ? uxQueueMessagesWaiting(s_inbound_q) : 0;
+}
+
+uint32_t espnow_outbound_drops()
+{
+    return s_outbound_drops.load(std::memory_order_relaxed);
+}
+
+uint32_t espnow_outbound_pending()
+{
+    return s_outbound_q ? uxQueueMessagesWaiting(s_outbound_q) : 0;
 }

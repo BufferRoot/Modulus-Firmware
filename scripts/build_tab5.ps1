@@ -4,7 +4,8 @@ param(
     [switch]$Flash,
     [string]$Port = "",
     [string]$IdfPath = "",
-    [switch]$SkipAscii
+    [switch]$SkipAscii,
+    [switch]$Lab
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,6 +74,13 @@ try {
 
     Push-Location "$RepoRoot\firmware\tab5"
     Remove-Item Env:SDKCONFIG_DEFAULTS -ErrorAction SilentlyContinue
+    if ($Lab) {
+        $env:SDKCONFIG_DEFAULTS = "sdkconfig.defaults;sdkconfig.defaults.lvgl_lab"
+        Write-Host "==> LVGL lab profile (SDKCONFIG_DEFAULTS=$env:SDKCONFIG_DEFAULTS)"
+        Write-Warning "Lab build compiles LVGL UI — expect larger app + factory pressure. Not for field flash."
+    } else {
+        Write-Host "==> Zig-UI production profile (sdkconfig.defaults)"
+    }
     & "$PSScriptRoot\patch_tab5_idf6_deps.ps1"
     if (-not (Test-Path -LiteralPath "sdkconfig") -or -not (Select-String -Path "sdkconfig" -Pattern 'CONFIG_IDF_TARGET="esp32p4"' -Quiet)) {
         Write-Host "==> idf.py set-target esp32p4"
@@ -83,6 +91,7 @@ try {
     } else {
         Write-Host "==> skip set-target (esp32p4 sdkconfig present)"
     }
+    & "$PSScriptRoot\write_flash_walltime.ps1" -RepoRoot $RepoRoot
     Write-Host "==> idf.py build"
     idf.py build
     if ($LASTEXITCODE -ne 0) {
@@ -92,13 +101,13 @@ try {
     $binPath = Join-Path $RepoRoot "firmware\tab5\build\modulus_tab5.bin"
     if (Test-Path -LiteralPath $binPath) {
         $appBytes = (Get-Item -LiteralPath $binPath).Length
-        $factoryBytes = 0x500000
+        $factoryBytes = 0x480000
         $usedPct = [math]::Round(100.0 * $appBytes / $factoryBytes, 1)
         $freePct = [math]::Round(100.0 - $usedPct, 1)
         Write-Host ("==> App size: 0x{0:x} ({1:N0} bytes, {2}% factory used, {3}% free)" -f `
             $appBytes, $appBytes, $usedPct, $freePct)
         if ($usedPct -ge 85.0) {
-            Write-Warning ("Factory partition headroom low: {0}% used (threshold 85%). Review fonts/icon ROM before adding assets." -f $usedPct)
+            Write-Warning ("Factory partition headroom low: {0}% used (threshold 85%). Review Zig assets / LVGL link before adding ROM." -f $usedPct)
         }
         $elfPath = Join-Path $RepoRoot "firmware\tab5\build\modulus_tab5.elf"
         if (Test-Path -LiteralPath $elfPath) {

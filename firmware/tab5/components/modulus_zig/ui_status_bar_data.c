@@ -129,13 +129,7 @@ void bar_format_clock(char *buf, size_t len)
         return;
     }
 
-    strftime(buf, len, "%I:%M:%S %p", &t);
-    if (strlen(buf) > 8) {
-        buf[5] = ' ';
-        buf[6] = buf[9];
-        buf[7] = buf[10];
-        buf[8] = '\0';
-    }
+    strftime(buf, len, "%I:%M %p", &t);
 }
 
 modulus_ui_icon_id_t bar_batt_icon(const modulus_battery_status_t *st)

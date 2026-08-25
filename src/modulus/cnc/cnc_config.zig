@@ -67,30 +67,6 @@ pub const SoftLimits = struct {
     max_c: f32 = 360,
 };
 
-/// Human-readable label for a CNC transport connection.
-///
-/// ```zig
-/// const std = @import("std");
-/// const cnc_config = @import("cnc_config.zig");
-///
-/// try std.testing.expectEqualStrings("RS-485", cnc_config.connectionStr(.rs485));
-/// ```
-pub fn connectionStr(c: Connection) []const u8 {
-    return switch (c) {
-        .esp_now => "ESP-NOW",
-        .websocket => "WebSocket",
-        .telnet => "Telnet",
-        .serial_usb => "Serial USB",
-        .rs485 => "RS-485",
-        .ble_hid => "BLE HID",
-        .i2c => "I2C",
-        .usb_hid => "USB HID",
-        .usb_gamepad => "USB Gamepad",
-        .can_bus => "CAN Bus",
-        else => "?",
-    };
-}
-
 pub fn protocolStr(p: Protocol) []const u8 {
     return switch (p) {
         .grblhal => "GrblHAL",

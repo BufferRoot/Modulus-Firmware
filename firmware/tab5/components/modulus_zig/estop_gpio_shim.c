@@ -9,6 +9,12 @@
  * Toggle latch: each debounced press flips E-stop ON/OFF (must release
  * before the next press is accepted). ON → HALT_host + soft reset (0x18);
  * OFF → HALT release + $X unlock.
+ *
+ * AMP contract (P3):
+ *   - Pinned Core 1, priority 8 (> zig_ui pri 5, > sys_task pri 5).
+ *   - Never calls into LVGL / Zig Engine paint.
+ *   - modulus_espnow_bridge_halt is non-blocking (skip if ESP-NOW not up).
+ *   - modulus_zig_cmd_reset/unlock only touch CNC driver (mutex + TX).
  */
 #include "estop_gpio_shim.h"
 #include "cnc_cmd_exports.h"
@@ -24,7 +30,10 @@ static const char *TAG = "estop_gpio";
 
 #define ESTOP_POLL_MS     10
 #define ESTOP_DEBOUNCE_MS 30
-
+/** Above zig_ui (5) and sys_task (5); below evt_dispatch (~10) is fine. */
+#define ESTOP_TASK_PRIO   8
+#define ESTOP_TASK_CORE   1
+#define ESTOP_STACK       2048
 static bool s_started = false;
 static bool s_estop_active = false;
 
@@ -82,11 +91,12 @@ void modulus_estop_gpio_init(void)
         return;
     }
 
-    if (xTaskCreatePinnedToCore(estop_poll_task, "estop_gpio", 2048, NULL, 8, NULL, 1) != pdPASS) {
+    if (xTaskCreatePinnedToCore(estop_poll_task, "estop_gpio", ESTOP_STACK, NULL, ESTOP_TASK_PRIO, NULL, ESTOP_TASK_CORE) != pdPASS) {
         ESP_LOGE(TAG, "poll task create failed");
         return;
     }
 
     s_started = true;
-    ESP_LOGI(TAG, "wired E-stop toggle on M5-Bus GPIO%d (NO to GND)", (int)TAB5_MBUS_ESTOP_GPIO);
+    ESP_LOGI(TAG, "wired E-stop toggle on M5-Bus GPIO%d (NO to GND) core=%d prio=%d",
+             (int)TAB5_MBUS_ESTOP_GPIO, ESTOP_TASK_CORE, ESTOP_TASK_PRIO);
 }

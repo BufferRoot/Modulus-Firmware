@@ -145,7 +145,7 @@ void modulus_power_apply_rails(void)
         return;
     }
     const bool ext5v = modulus_nvs_get_u8("ext5v", 1) != 0;
-    const bool usb5v = modulus_nvs_get_u8("usb5v", 0) != 0;
+    const bool usb5v = modulus_nvs_get_u8("usb5v", 1) != 0;
     const bool chg = modulus_nvs_get_u8("chg_en", 1) != 0;
     const bool qc = modulus_nvs_get_u8("qc", 1) != 0;
     tab5_pi4ioe_set_ext_5v_en(ext5v);
@@ -238,7 +238,7 @@ static void deep_sleep_worker_impl(void)
     }
 
     const bool ext5v_was_on = modulus_nvs_get_u8("ext5v", 1) != 0;
-    const bool usb5v_was_on = modulus_nvs_get_u8("usb5v", 0) != 0;
+    const bool usb5v_was_on = modulus_nvs_get_u8("usb5v", 1) != 0;
     if (s_gate_ext5v && ext5v_was_on) {
         tab5_pi4ioe_set_ext_5v_en(false);
     }
@@ -295,7 +295,7 @@ static void power_wake_from_deep_sleep(void)
     modulus_battery_set_poll_paused(false);
 
     const bool ext5v_was_on = modulus_nvs_get_u8("ext5v", 1) != 0;
-    const bool usb5v_was_on = modulus_nvs_get_u8("usb5v", 0) != 0;
+    const bool usb5v_was_on = modulus_nvs_get_u8("usb5v", 1) != 0;
     if (s_gate_ext5v && ext5v_was_on) {
         tab5_pi4ioe_set_ext_5v_en(true);
     }

@@ -83,6 +83,7 @@ pub fn boot() void {
     hooks.setSpawnHandler(system_task_mod.spawn);
     rt.boot() catch {
         boot_ok = false;
+        rt.deinit();
         return;
     };
     transport_reinit_mod.spawn(&rt.transport);
@@ -126,7 +127,7 @@ pub fn fillCncStatus(out: *device_ui_mod.CncStatus) void {
     if (!boot_ok) return;
     const st = rt.drv.status();
     out.state = @intFromEnum(st.state);
-    out.connected = if (st.state != .disconnected) @as(u8, 1) else 0;
+    out.connected = if (rt.drv.engine.session() != .disconnected) @as(u8, 1) else 0;
     out.session = @intFromEnum(rt.drv.engine.session());
     out.mpg_active = if (st.mpg_active) @as(u8, 1) else 0;
     out.jog_mode = @intFromEnum(st.jog_mode);
@@ -135,6 +136,7 @@ pub fn fillCncStatus(out: *device_ui_mod.CncStatus) void {
     out.feed_rate = st.feed_rate;
     out.feed_ovr = st.overrides.feed;
     out.spindle_ovr = st.overrides.spindle;
+    out.rapid_ovr = st.overrides.rapid;
     out.wcs = @intFromEnum(st.wcs);
     out.tool_number = st.tool_number;
     out.active_axis = @intFromEnum(st.active_axis);
@@ -268,19 +270,24 @@ pub fn cmdSpindleOverride(delta: i8) void {
     rt.drv.cmdSpindleOverride(delta);
 }
 
+pub fn cmdRapidOverride(pct: u8) void {
+    if (!boot_ok) return;
+    rt.drv.cmdRapidOverride(pct);
+}
+
 pub fn cmdHomeAxis(axis_idx: u8) void {
     if (!boot_ok) return;
     rt.drv.cmdHomeAxis(axis_idx);
 }
 
-pub fn cmdZeroAxis(axis_idx: u8) void {
-    if (!boot_ok) return;
-    rt.drv.cmdZeroAxis(axis_idx);
+pub fn cmdZeroAxis(axis_idx: u8) bool {
+    if (!boot_ok) return false;
+    return rt.drv.cmdZeroAxis(axis_idx);
 }
 
-pub fn cmdZeroAll() void {
-    if (!boot_ok) return;
-    rt.drv.cmdZeroAll();
+pub fn cmdZeroAll() bool {
+    if (!boot_ok) return false;
+    return rt.drv.cmdZeroAll();
 }
 
 pub fn cycleWcs() void {
@@ -356,6 +363,22 @@ pub fn maintResetCounters() void {
 pub fn maintFlush() void {
     if (!boot_ok) return;
     rt.drv.maintFlush();
+}
+
+pub const MaintMeters = struct {
+    travel_mm: u32 = 0,
+    spindle_sec: u32 = 0,
+    run_sec: u32 = 0,
+};
+
+/// Live Driver.maint → settings Machine tab (not host tickMaint soft accrual).
+pub fn maintMeters() MaintMeters {
+    if (!boot_ok) return .{};
+    return .{
+        .travel_mm = rt.drv.maint.travel_mm,
+        .spindle_sec = rt.drv.maint.spindle_sec,
+        .run_sec = rt.drv.maint.run_sec,
+    };
 }
 
 pub fn cmdCoolantToggle() void {

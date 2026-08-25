@@ -338,10 +338,13 @@ static void stor_timer_cb(lv_timer_t *timer)
     if (s_stor_usb_lbl) {
         const char *usb_st = modulus_storage_usb_host_status_text();
         stor_set_lbl_if_changed(s_stor_usb_lbl, usb_st, s_stor_usb_cache, sizeof(s_stor_usb_cache));
-        stor_set_value_color_if_changed(s_stor_usb_lbl, SETTINGS_STATUS_DIM, &s_stor_usb_color);
+        const lv_color_t usb_col = (strcmp(usb_st, "Device linked") == 0)
+                                       ? SETTINGS_STATUS_OK
+                                       : SETTINGS_STATUS_DIM;
+        stor_set_value_color_if_changed(s_stor_usb_lbl, usb_col, &s_stor_usb_color);
     }
     if (s_stor_usb_vbus_lbl) {
-        const bool vbus = modulus_nvs_get_u8("usb5v", 0) != 0;
+        const bool vbus = modulus_nvs_get_u8("usb5v", 1) != 0;
         stor_set_lbl_if_changed(s_stor_usb_vbus_lbl, vbus ? "On (Power tab)" : "Off",
                                 s_stor_usb_vbus_cache, sizeof(s_stor_usb_vbus_cache));
         stor_set_value_color_if_changed(s_stor_usb_vbus_lbl,
@@ -704,12 +707,16 @@ static void stor_build_tab_now(void)
     settings_bind_menu_click(cache_row, stor_cache_click_cb, NULL);
     modulus_ui_suppress_touch_tick(cache_row);
 
-    settings_section(p, "USB host", "VBUS is Power tab; host-link detect pending BSP.");
-    s_stor_usb_lbl = settings_detail_row(p, "Host data",
-                                         modulus_storage_usb_host_status_text());
-    stor_set_value_color(s_stor_usb_lbl, SETTINGS_STATUS_DIM);
+    settings_section(p, "USB host", "VBUS is Power tab; host stack enumerates when rail is on.");
     {
-        const bool vbus = modulus_nvs_get_u8("usb5v", 0) != 0;
+        const char *usb_st = modulus_storage_usb_host_status_text();
+        s_stor_usb_lbl = settings_detail_row(p, "Host data", usb_st);
+        stor_set_value_color(s_stor_usb_lbl,
+                             strcmp(usb_st, "Device linked") == 0 ? SETTINGS_STATUS_OK
+                                                                 : SETTINGS_STATUS_DIM);
+    }
+    {
+        const bool vbus = modulus_nvs_get_u8("usb5v", 1) != 0;
         s_stor_usb_vbus_lbl = settings_detail_row(p, "Type-A VBUS",
                                                   vbus ? "On (Power tab)" : "Off");
         stor_set_value_color(s_stor_usb_vbus_lbl,

@@ -287,14 +287,33 @@ test "cnc: cmdZeroAxis sends G10 L20 when ready" {
     drv.poll(0);
     try testing.expectEqual(cnc_state.MachineState.idle, drv.status().state);
     sent.clearRetainingCapacity();
-    drv.cmdZeroAxis(0);
-    try testing.expectEqualStrings("G10 L20 P0 X0\n", sent.items);
+    try testing.expect(drv.cmdZeroAxis(0));
+    try testing.expectEqualStrings("G10 L20 P1 X0\n", sent.items);
     sent.clearRetainingCapacity();
-    drv.cmdZeroAxis(1);
-    try testing.expectEqualStrings("G10 L20 P0 Y0\n", sent.items);
+    try testing.expect(drv.cmdZeroAxis(1));
+    try testing.expectEqualStrings("G10 L20 P1 Y0\n", sent.items);
     sent.clearRetainingCapacity();
-    drv.cmdZeroAxis(2);
-    try testing.expectEqualStrings("G10 L20 P0 Z0\n", sent.items);
+    try testing.expect(drv.cmdZeroAxis(2));
+    try testing.expectEqualStrings("G10 L20 P1 Z0\n", sent.items);
+}
+
+test "cnc: cmdZeroAxis uses active WCS P word" {
+    var drv = Driver.init(.{});
+    var sent = std.ArrayListUnmanaged(u8).empty;
+    defer sent.deinit(testing.allocator);
+    drv.setSendFn(test_util.appendSend(&sent, testing.allocator));
+    test_util.connectToReady(&drv, 0);
+    drv.feed("ok\n");
+    drv.poll(0);
+    try test_util.expectReady(&drv);
+    drv.feed("<Idle|MPos:1.0,2.0,3.0|WPos:1.0,2.0,3.0|WCS:G55>\n");
+    drv.poll(0);
+    sent.clearRetainingCapacity();
+    try testing.expect(drv.cmdZeroAxis(0));
+    try testing.expectEqualStrings("G10 L20 P2 X0\n", sent.items);
+    sent.clearRetainingCapacity();
+    try testing.expect(drv.cmdZeroAll());
+    try testing.expectEqualStrings("G10 L20 P2 X0 Y0 Z0\n", sent.items);
 }
 
 test "cnc: cmdZeroAxis still sends under mpg_blocked" {
@@ -314,15 +333,15 @@ test "cnc: cmdZeroAxis still sends under mpg_blocked" {
     );
     try testing.expectEqual(cnc_state.MachineState.idle, drv.status().state);
     sent.clearRetainingCapacity();
-    drv.cmdZeroAxis(0);
-    try testing.expectEqualStrings("G10 L20 P0 X0\n", sent.items);
+    try testing.expect(drv.cmdZeroAxis(0));
+    try testing.expectEqualStrings("G10 L20 P1 X0\n", sent.items);
 }
 
 test "cnc: cmdZeroAxis gated when disconnected" {
     var drv = Driver.init(.{});
     var tx_len: usize = 0;
     drv.setSendFn(test_util.countSend(&tx_len));
-    drv.cmdZeroAxis(0);
+    try testing.expect(!drv.cmdZeroAxis(0));
     try testing.expectEqual(@as(usize, 0), tx_len);
 }
 

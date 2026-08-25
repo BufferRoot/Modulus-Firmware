@@ -166,9 +166,9 @@ static void apply_semantic_colors(bool dark)
     /* Fills paired for ≥4.5:1 with on_tinted_btn (dashboard action labels).
      * Light fills also pass as title ink on surface (Hold modal). */
     if (dark) {
-        s_pal.cycle = lv_color_hex(0x34D399);
-        s_pal.hold = lv_color_hex(0xFACC15);
-        s_pal.home_all = lv_color_hex(0x3B82F6);
+        s_pal.cycle = lv_color_hex(0x22C55E); /* vibrant green — color lock */
+        s_pal.hold = lv_color_hex(0xF59E0B); /* golden orange */
+        s_pal.home_all = lv_color_hex(0x1E3A8A); /* dark blue */
         s_pal.error = lv_color_hex(0xFFB4AB);
         s_pal.on_error = lv_color_hex(0x410002);
         s_pal.success = lv_color_hex(0x4CAF50);
@@ -177,31 +177,29 @@ static void apply_semantic_colors(bool dark)
         s_pal.inverse_surface = lv_color_hex(0x424242);
         s_pal.on_cycle = lv_color_hex(0x0D0D12);
         s_pal.on_hold = lv_color_hex(0x0D0D12);
-        s_pal.on_home = lv_color_hex(0x0D0D12);
+        s_pal.on_home = lv_color_hex(0xFFFFFF);
         s_pal.on_tinted_btn = lv_color_hex(0x0D0D12);
-        s_pal.semantic_stop = lv_color_hex(0xFF4D4D);
-        /* Lime, deliberately distinct from cycle's emerald 0x34D399 — the old
-         * 0x24D391 was visually identical to CYCLE START when both showed. */
+        s_pal.semantic_stop = lv_color_hex(0x991B1B); /* dark red */
+        /* Lime, deliberately distinct from cycle green. */
         s_pal.semantic_resume = lv_color_hex(0xA3E635);
-        s_pal.semantic_power = lv_color_hex(0xFF4D4D);
+        s_pal.semantic_power = lv_color_hex(0x991B1B);
     } else {
         s_pal.cycle = lv_color_hex(0x15803D);
-        s_pal.hold = lv_color_hex(0x854D0E);
-        s_pal.home_all = lv_color_hex(0x1D4ED8);
+        s_pal.hold = lv_color_hex(0xC2410C);
+        s_pal.home_all = lv_color_hex(0x1E3A8A);
         s_pal.error = lv_color_hex(0xB91C1C);
         s_pal.on_error = lv_color_hex(0xFFFFFF);
         s_pal.success = lv_color_hex(0x15803D);
-        s_pal.warning = lv_color_hex(0x854D0E);
+        s_pal.warning = lv_color_hex(0xC2410C);
         s_pal.neutral = lv_color_hex(0x4B5563);
         s_pal.inverse_surface = lv_color_hex(0xE0E0E6);
         s_pal.on_cycle = lv_color_hex(0xFFFFFF);
         s_pal.on_hold = lv_color_hex(0xFFFFFF);
         s_pal.on_home = lv_color_hex(0xFFFFFF);
         s_pal.on_tinted_btn = lv_color_hex(0xFFFFFF);
-        s_pal.semantic_stop = lv_color_hex(0xB91C1C);
-        /* Lime-800 — distinct from cycle green; AA with white. */
+        s_pal.semantic_stop = lv_color_hex(0x7F1D1D);
         s_pal.semantic_resume = lv_color_hex(0x4D7C0F);
-        s_pal.semantic_power = lv_color_hex(0xB91C1C);
+        s_pal.semantic_power = lv_color_hex(0x7F1D1D);
     }
 }
 

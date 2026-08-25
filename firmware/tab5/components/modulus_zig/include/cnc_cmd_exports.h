@@ -39,6 +39,7 @@ void modulus_zig_set_units_mm(uint8_t mm);
 void modulus_zig_set_step_size(uint8_t idx);
 void modulus_zig_cmd_feed_override(int8_t delta);
 void modulus_zig_cmd_spindle_override(int8_t delta);
+void modulus_zig_cmd_rapid_override(uint8_t pct);
 void modulus_zig_cmd_home_axis(uint8_t axis_idx);
 void modulus_zig_cmd_zero_axis(uint8_t axis_idx);
 void modulus_zig_cmd_zero_all(void);

@@ -649,11 +649,12 @@ bool modulus_espnow_bridge_halt(bool assert)
     }
 
     modulus_espnow_stack_register();
+    /* E-stop / Core-1 path calls this — never block waiting for ESP-NOW init
+     * (ensure_inited can sleep up to MODULUS_ESPNOW_INIT_WAIT_MS). Soft reset
+     * still runs from estop_gpio; HALT is best-effort if radio already up. */
     if (!modulus_espnow_stack_inited()) {
-        if (!modulus_espnow_stack_ensure_inited(MODULUS_ESPNOW_INIT_WAIT_MS)) {
-            ESP_LOGW(TAG, "bridge HALT skipped: ESP-NOW init timeout");
-            return false;
-        }
+        ESP_LOGW(TAG, "bridge HALT skipped: ESP-NOW not inited (non-blocking)");
+        return false;
     }
 
     const uint8_t ch = modulus_wireless_espnow_channel();

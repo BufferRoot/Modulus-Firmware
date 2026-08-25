@@ -98,9 +98,11 @@ static lv_obj_t *qs_probe_btn(lv_obj_t *parent, const char *txt, lv_event_cb_t c
 {
     lv_obj_t *b = lv_button_create(parent);
     lv_obj_set_size(b, lv_pct(31), MOD_UI_TOUCH_MIN);
-    lv_obj_set_style_radius(b, MOD_UI_SHAPE_SM, 0);
+    lv_obj_set_style_radius(b, MOD_UI_SHAPE_FULL, 0);
     lv_obj_set_style_shadow_width(b, 0, 0);
     lv_obj_set_style_bg_color(b, modulus_ui_color_secondary_container(), 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    modulus_ui_apply_pressed_state_layer_color(b, modulus_ui_color_on_secondary_container());
     lv_obj_t *l = lv_label_create(b);
     lv_label_set_text(l, txt);
     lv_obj_set_style_text_color(l, modulus_ui_color_on_secondary_container(), 0);

@@ -165,12 +165,6 @@ pub fn formatWsProbeReport(allocator: std.mem.Allocator, probe: WsProbeResult) E
     });
 }
 
-pub fn writeWsProbeReport(io: std.Io, allocator: std.mem.Allocator, path: []const u8, probe: WsProbeResult) Error!void {
-    const text = try formatWsProbeReport(allocator, probe);
-    defer allocator.free(text);
-    try host_io.writeTextFile(io, path, text);
-}
-
 test "host_http: ws upgrade request matches device shim" {
     if (comptime build_options.device_nvs) return error.SkipZigTest;
     var buf: [384]u8 = undefined;
