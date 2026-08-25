@@ -4,7 +4,7 @@
 
 # Modulus Firmware
 
-**Version:** 2.0.0  
+**Version:** 3.0.0  
 **Author:** D. McLean / BufferRoot  
 **Platform:** M5Stack Tab5 (ESP32-P4 + ESP32-C6)  
 **Stack:** Zig 0.16 + ESP-IDF 6  
@@ -147,16 +147,16 @@ LICENSE              MIT
 
 ## Prebuilt flash images
 
-Download **v2.0.0** assets (bootloader + partition table + app per target):
+Download **v3.0.0** assets (bootloader + partition table + app per target):
 
-**https://github.com/BufferRoot/Modulus-Firmware/releases/tag/v2.0.0**
+**https://github.com/BufferRoot/Modulus-Firmware/releases/tag/v3.0.0**
 
 | Zip | Chip | What it is | Typical port |
 |-----|------|------------|--------------|
-| `modulus-tab5-p4-v2.0.0.zip` | ESP32-P4 | Pendant UI + control | COM5 (Tab5 USB) |
-| `modulus-tab5-c6-v2.0.0.zip` | ESP32-C6 | ESP-Hosted / ESP-NOW radio | COM6 (C6 USB; hold **BOOT** if needed) |
-| `modulus-nanoh2-v2.0.0.zip` | ESP32-H2 | Zigbee shop hub | NanoH2 USB-C (hold **BUTTON**) |
-| `modulus-s3-bridge-v2.0.0.zip` | ESP32-S3 | Cabinet ESP-NOW → UART | COM8 (bridge board) |
+| `modulus-tab5-p4-v3.0.0.zip` | ESP32-P4 | Pendant UI + control (Zig UI Engine) | COM5 (Tab5 USB) |
+| `modulus-tab5-c6-v3.0.0.zip` | ESP32-C6 | ESP-Hosted / ESP-NOW radio | COM6 (C6 USB; hold **BOOT** if needed) |
+| `modulus-nanoh2-v3.0.0.zip` | ESP32-H2 | Zigbee shop hub | NanoH2 USB-C (hold **BUTTON**) |
+| `modulus-s3-bridge-v3.0.0.zip` | ESP32-S3 | Cabinet ESP-NOW → UART | COM8 (bridge board) |
 | `SHA256SUMS.txt` | — | Checksums for every `.bin` | — |
 
 ### What you need
@@ -171,7 +171,7 @@ COM ports on your PC may differ — change `-p COMx` to match Device Manager.
 
 ### 1. Tab5 C6 (wireless slave)
 
-Unzip `modulus-tab5-c6-v2.0.0.zip`, then:
+Unzip `modulus-tab5-c6-v3.0.0.zip`, then:
 
 ```powershell
 cd path\to\tab5-c6
@@ -187,7 +187,7 @@ If the port never appears: hold **BOOT** on the C6 while plugging USB, then run 
 
 ### 2. Tab5 P4 (main pendant)
 
-Unzip `modulus-tab5-p4-v2.0.0.zip`, then:
+Unzip `modulus-tab5-p4-v3.0.0.zip`, then:
 
 ```powershell
 cd path\to\tab5-p4
@@ -202,7 +202,7 @@ Power-cycle the Tab5. Cold boot should show wireless / SDIO ready (not `0x107`).
 
 ### 3. ESP32-S3 bridge (cabinet)
 
-Unzip `modulus-s3-bridge-v2.0.0.zip`, then:
+Unzip `modulus-s3-bridge-v3.0.0.zip`, then:
 
 ```powershell
 cd path\to\s3-bridge
@@ -217,7 +217,7 @@ Wire S3 UART to your CNC (grblHAL) serial. On the Tab5: **Settings → Wireless 
 
 ### 4. NanoH2 (Zigbee hub, optional)
 
-Enable **EXT5V** for Grove/H2 power. Unzip `modulus-nanoh2-v2.0.0.zip`, hold **BUTTON** on the Stamp, then:
+Enable **EXT5V** for Grove/H2 power. Unzip `modulus-nanoh2-v3.0.0.zip`, hold **BUTTON** on the Stamp, then:
 
 ```powershell
 cd path\to\nanoh2
