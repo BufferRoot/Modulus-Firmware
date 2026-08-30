@@ -27,6 +27,8 @@
 #define ESPNOW_CMD_LOCK_CHANNEL 0x08
 
 #define ESPNOW_CMD_SET_RATE   0x09
+#define ESPNOW_CMD_SCAN_BEGIN 0x0A /* [duration_ms:2 LE optional, default 3500] */
+#define ESPNOW_CMD_SCAN_END   0x0B
 
 
 
@@ -48,6 +50,8 @@
 #define ESPNOW_MAX_PAYLOAD 1470
 
 
+
+#define ESPNOW_PROTO_CAP_SCAN 0x01
 
 #define ESPNOW_EVT_INIT_OK    0x81
 

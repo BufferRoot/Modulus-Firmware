@@ -4,6 +4,7 @@
  */
 #include "display_shim.h"
 #include "imu_shim.h"
+#include "power_shim.h"
 #include "security_shim.h"
 #include "touch_shim.h"
 #include "ui_engine_flush.h"
@@ -21,6 +22,8 @@
 static const char *TAG = "modulus_display";
 
 static lv_display_t *s_disp = NULL;
+/* ZIG_UI: the panel we created via bsp_display_new_with_handles(). */
+static esp_lcd_panel_handle_t s_panel_handle = NULL;
 static bool s_ready = false;
 static uint8_t s_brightness = 100;
 static uint8_t s_pre_dim_bright = 100;
@@ -57,16 +60,22 @@ static uint32_t effective_inactive_ms(void)
         const int64_t dt = now - s_last_activity_us;
         return dt > 0 ? (uint32_t)(dt / 1000) : 0;
     }
+#if CONFIG_MODULUS_ZIG_UI_ENGINE
+    return 0; /* unreachable: s_disp is always NULL under ZIG_UI */
+#else
     return lv_display_get_inactive_time(s_disp);
+#endif
 }
 
 static void wake_from_idle(void)
 {
     s_wake_hold_until_us = esp_timer_get_time() + k_wake_hold_us;
     s_last_activity_us = esp_timer_get_time();
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
     if (s_disp && !s_zig_owns) {
         lv_display_trigger_activity(s_disp);
     }
+#endif
 
     const uint8_t restore = s_pre_dim_bright;
     const bool was_sleeping = s_sleeping;
@@ -92,6 +101,12 @@ static void activity_check_cb(void *arg)
     }
 
     const uint32_t inactive_ms = effective_inactive_ms();
+
+    /* Deep sleep used to ride an lv_timer, but modulus_display_zig_takeover()
+     * calls lvgl_port_stop(), so under the Zig UI engine that timer never
+     * fired and "sleep then deep sleep after N min" silently did nothing.
+     * Drive it from this esp_timer instead — it runs whoever owns the panel. */
+    modulus_power_poll_deep_sleep(inactive_ms);
 
     if (!s_sleeping) {
         modulus_security_idle_lock_tick(inactive_ms);
@@ -192,43 +207,27 @@ bool modulus_display_init(uint32_t stripe_lines, bool flipped, uint8_t brightnes
     i2c_master_bus_handle_t i2c_bus = bsp_i2c_get_handle();
     ESP_RETURN_ON_FALSE(tab5_pi4ioe_init(i2c_bus), false, TAG, "PI4IOE init failed");
 
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
     lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-#if CONFIG_MODULUS_ZIG_UI_ENGINE
-    /* Zig owns paint — thin LVGL port only for BSP panel bind / flush ctx. */
-    lvgl_cfg.task_stack = 8192;
-    lvgl_cfg.task_max_sleep_ms = 1000;
-    lvgl_cfg.timer_period_ms = 50;
-#else
     /* 16 KiB overflowed under 1280×720 sw_rotate when Quick Settings /
      * wireless pages ran lv_obj_clean+rebuild inside input handlers (Zigbee
      * tile tap + 1 Hz state refresh) — stack guard fault after IDLE0 WDT. */
     lvgl_cfg.task_stack = 24576;
     lvgl_cfg.task_max_sleep_ms = 33;
-#endif
     lvgl_cfg.task_priority = 5;
     /* ESP_LVGL_PORT_INIT_CONFIG defaults task_affinity to -1 (any core) —
      * pin to Core 0 so taskLVGL never migrates onto Core 1 and competes with
      * sys_task/serial_rx (sovereign-core contract: Core 0 = UI, Core 1 = CNC). */
     lvgl_cfg.task_affinity = 0;
+#endif
 
 #if CONFIG_MODULUS_ZIG_UI_ENGINE
-    /* Minimal DMA stripe — Zig paints the DPI FB directly; LVGL buf only for bind. */
-    const uint32_t stripe = (stripe_lines > 0 && stripe_lines < 40) ? stripe_lines : 24;
-    bsp_display_cfg_t cfg = {
-        .lvgl_port_cfg = lvgl_cfg,
-        .buffer_size = BSP_LCD_H_RES * stripe,
-        .double_buffer = false,
-        .flags = {
-            .buff_dma = true,
-            .buff_spiram = true,
-            .sw_rotate = true,
-        },
-    };
+    /* No lvgl_port config needed — see the init block below. */
 #else
-    const uint32_t stripe = (stripe_lines > 0) ? stripe_lines : 120;
+    const uint32_t stripe_used = (stripe_lines > 0) ? stripe_lines : 120;
     bsp_display_cfg_t cfg = {
         .lvgl_port_cfg = lvgl_cfg,
-        .buffer_size = BSP_LCD_H_RES * stripe,
+        .buffer_size = BSP_LCD_H_RES * stripe_used,
         .double_buffer = true,
         .flags = {
             .buff_dma = true,
@@ -240,11 +239,59 @@ bool modulus_display_init(uint32_t stripe_lines, bool flipped, uint8_t brightnes
     };
 #endif
 
+#if CONFIG_MODULUS_ZIG_UI_ENGINE
+    /* No LVGL display at all.
+     *
+     * We used to call bsp_display_start_with_config() (which does
+     * lvgl_port_init + bsp_display_lcd_init + indev) and then dig the panel
+     * handle back out of esp_lvgl_port's PRIVATE lvgl_port_display_ctx_t,
+     * only to tear the display and indev down again at zig_takeover.
+     * bsp_display_new_with_handles() is public and hands us the panel, io and
+     * DSI bus directly — same sequence bsp_display_lcd_init() runs internally,
+     * minus the LVGL objects we were destroying anyway.
+     *
+     * (void)stripe_lines / lvgl_cfg: no draw buffer and no port task here. */
+    (void)stripe_lines;
+    const uint32_t stripe_used = 0;
+    const bsp_display_config_t bsp_disp_cfg = {
+        .dsi_bus = {
+            .phy_clk_src = 0,
+            .lane_bit_rate_mbps = BSP_LCD_MIPI_DSI_LANE_BITRATE_MBPS,
+        },
+    };
+    bsp_lcd_handles_t handles = {0};
+    const esp_err_t derr = bsp_display_new_with_handles(&bsp_disp_cfg, &handles);
+    if (derr != ESP_OK || handles.panel == NULL) {
+        ESP_LOGE(TAG, "bsp_display_new_with_handles failed: %s", esp_err_to_name(derr));
+        return false;
+    }
+    (void)esp_lcd_panel_disp_on_off(handles.panel, true);
+    s_panel_handle = handles.panel;
+    s_disp = NULL; /* there is no LVGL display; never hand one out */
+
+    /* BSP may chip-reset PI4IOE expanders — re-assert C6 rail before wireless. */
+    (void)tab5_pi4ioe_ensure_wlan_pwr_on();
+
+    /* Touch: create the one handle ourselves instead of adopting LVGL's. */
+    if (!modulus_touch_create_handle()) {
+        ESP_LOGE(TAG, "bsp_touch_new failed — touch unavailable");
+    }
+
+    if (brightness_pct > 100) {
+        brightness_pct = 100;
+    }
+    bsp_display_brightness_set((int)brightness_pct);
+    s_brightness = brightness_pct;
+    s_pre_dim_bright = brightness_pct;
+    s_ready = true;
+#else
     s_disp = bsp_display_start_with_config(&cfg);
     if (s_disp == NULL) {
         ESP_LOGE(TAG, "bsp_display_start_with_config failed");
         return false;
     }
+    /* BSP may chip-reset PI4IOE expanders — re-assert C6 rail before wireless init. */
+    (void)tab5_pi4ioe_ensure_wlan_pwr_on();
 
     if (!bsp_display_lock(0)) {
         ESP_LOGE(TAG, "bsp_display_lock failed after start");
@@ -261,12 +308,13 @@ bool modulus_display_init(uint32_t stripe_lines, bool flipped, uint8_t brightnes
     s_pre_dim_bright = brightness_pct;
 
     s_ready = true;
+#endif
     const size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     const size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     const size_t internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
     const size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
     ESP_LOGI(TAG, "Display ready (stripe=%lu lines, PSRAM DMA, rotation=%s, PPA=%s)",
-             (unsigned long)stripe, flipped ? "270°" : "90°",
+             (unsigned long)stripe_used, flipped ? "270°" : "90°",
 #if defined(CONFIG_LVGL_PORT_ENABLE_PPA) && CONFIG_LVGL_PORT_ENABLE_PPA
              "on"
 #else
@@ -276,16 +324,19 @@ bool modulus_display_init(uint32_t stripe_lines, bool flipped, uint8_t brightnes
     ESP_LOGI(TAG, "Heap after display init: internal free=%u KiB (max blk %u), PSRAM free=%u KiB (max blk %u)",
              (unsigned)(internal_free / 1024), (unsigned)(internal_largest / 1024),
              (unsigned)(psram_free / 1024), (unsigned)(psram_largest / 1024));
-    /* Bind the DPI scanout buffer the Zig engine paints into. */
-    modulus_ui_engine_flush_try_bind_from_lvgl(s_disp);
 #if CONFIG_MODULUS_ZIG_UI_ENGINE
+    /* Public handle — no private-struct spelunking. */
+    modulus_ui_engine_flush_bind_panel(s_panel_handle);
     if (!modulus_ui_engine_flush_ready()) {
-        ESP_LOGE(TAG, "BSP panel/DPI bind failed — Zig UI cannot paint");
-        bsp_display_unlock();
+        ESP_LOGE(TAG, "panel/DPI bind failed — Zig UI cannot paint");
         s_ready = false;
-        s_disp = NULL;
         return false;
     }
+#else
+    /* Bind the DPI scanout buffer the Zig engine paints into. */
+    modulus_ui_engine_flush_try_bind_from_lvgl(s_disp);
+#endif
+#if CONFIG_MODULUS_ZIG_UI_ENGINE
     if (!modulus_ui_engine_flush_dual()) {
         ESP_LOGW(TAG, "BSP gave single DPI FB — expect tear; want CONFIG_BSP_LCD_DPI_BUFFER_NUMS≥2");
     } else {
@@ -340,7 +391,12 @@ void modulus_display_lock(void)
     if (!s_ready) {
         return;
     }
+#if CONFIG_MODULUS_ZIG_UI_ENGINE
+    /* No LVGL port, no port mutex, and only zig_ui paints — nothing to
+     * serialise against. Kept as a no-op so the HAL API is unchanged. */
+#else
     (void)bsp_display_lock(0);
+#endif
 }
 
 void modulus_display_unlock(void)
@@ -348,8 +404,8 @@ void modulus_display_unlock(void)
     if (!s_ready) {
         return;
     }
-    bsp_display_unlock();
 #if CONFIG_MODULUS_ZIG_UI_ENGINE
+    /* No port mutex to release — see modulus_display_lock. */
     /* Zig paints splash then lights the panel in zig_ui_task. Unlock must not
      * turn on backlight over an empty LVGL screen (white flash before splash). */
     (void)s_zig_owns;
@@ -388,10 +444,29 @@ void modulus_display_zig_takeover(void)
     /* Zig polls touch via modulus_touch_poll_for_zig; stop LVGL's indev
      * timer so the two paths don't fight over the I2C bus. */
     modulus_touch_pause_for_zig();
-    /* Stop LVGL tick timer — Zig owns scanout; taskLVGL then mostly sleeps. */
+
+#if CONFIG_MODULUS_ZIG_UI_ENGINE
+    /* Nothing to tear down: under ZIG_UI there is no LVGL display, indev or
+     * port task — display_init() uses bsp_display_new_with_handles() and
+     * bsp_touch_new() directly. Just claim the DPI callbacks. */
+    modulus_ui_engine_flush_enable_vsync();
+#else
+    if (!modulus_touch_adopt_handle()) {
+        ESP_LOGE(TAG, "touch handle adoption failed — touch will not work");
+    }
+    if (s_disp) {
+        const esp_err_t rm = lvgl_port_remove_disp(s_disp);
+        if (rm != ESP_OK) {
+            ESP_LOGW(TAG, "lvgl_port_remove_disp failed: %s", esp_err_to_name(rm));
+        }
+        s_disp = NULL;
+    }
     if (lvgl_port_stop() != ESP_OK) {
         ESP_LOGW(TAG, "lvgl_port_stop failed (non-fatal)");
     }
+    modulus_ui_engine_flush_enable_vsync();
+#endif
+
     /* Activity monitor is esp_timer — keep running under Zig ownership. */
     modulus_display_refresh_activity_monitor();
     ESP_LOGI(TAG, "Zig UI engine owns scanout (LVGL tick stopped)");
@@ -408,6 +483,10 @@ void modulus_display_resume_activity_monitor(void)
 
 void modulus_display_set_flip(bool flipped)
 {
+#if CONFIG_MODULUS_ZIG_UI_ENGINE
+    /* Zig rotates in fb.zig (PanelFb.flipped); there is no LVGL display. */
+    (void)flipped;
+#else
     if (!s_ready || s_disp == NULL) {
         return;
     }
@@ -420,6 +499,7 @@ void modulus_display_set_flip(bool flipped)
         lv_obj_invalidate(lv_layer_top());
     }
     bsp_display_unlock();
+#endif
 }
 
 void modulus_display_set_timeouts(uint16_t dim_sec, uint16_t sleep_sec)
@@ -437,9 +517,11 @@ void modulus_display_start_activity_monitor(void)
 void modulus_display_note_user_activity(void)
 {
     s_last_activity_us = esp_timer_get_time();
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
     if (s_disp && !s_zig_owns) {
         lv_display_trigger_activity(s_disp);
     }
+#endif
     if (s_sleeping || s_dimmed) {
         wake_from_idle();
     }

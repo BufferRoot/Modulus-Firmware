@@ -74,7 +74,11 @@ pub fn channelIo(comptime conn: cnc_config.Connection) type {
                     break :blk c.modulus_canbus_start(brate, nid, mode);
                 },
                 .esp_now => blk: {
-                    const mac = cstrFromStore(store, settings_keys.en_mac, "FF:FF:FF:FF:FF:FF", &mac_buf);
+                    // Never invent a broadcast peer — empty NVS must fail open.
+                    if (!store.getStr(settings_keys.en_mac, &mac_buf)) break :blk false;
+                    const z = std.mem.indexOfScalar(u8, &mac_buf, 0) orelse mac_buf.len;
+                    if (z == 0) break :blk false;
+                    const mac = mac_buf[0..z :0];
                     const ch = espnow_config.getChannel(store);
                     const enc = store.getU8(settings_keys.en_enc, 0) != 0;
                     break :blk c.modulus_espnow_transport_start(mac.ptr, ch, enc);

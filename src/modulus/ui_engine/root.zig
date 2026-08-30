@@ -102,6 +102,7 @@ test {
     _ = settings_other_tabs;
     _ = settings_cnc_modals;
     _ = settings_dashboard_modals;
+    _ = settings_extra_modals;
     _ = settings_pin_modal;
     _ = settings_mach_string_modal;
     _ = settings_menu;
@@ -121,3 +122,5 @@ test {
     _ = ui_lint;
     _ = host_win32;
 }
+
+

@@ -17,6 +17,10 @@ const FlushApi = if (device_flush) struct {
     extern fn modulus_ui_engine_flush_scanout() ?[*]color.Rgb565;
     extern fn modulus_ui_engine_flush_scanout_px() u32;
     extern fn modulus_ui_engine_flush_dual() bool;
+    /// Cache write-back of dirty rows on the current back buffer.
+    /// NOTE: a PPA-written rect really wants M2C (invalidate), not C2M — see
+    /// ui_engine_flush_shim.c. Both M2C variants tried on device regressed the
+    /// first paint, so this stays C2M until that is understood.
     extern fn modulus_ui_engine_flush_rows(y0: u16, y1: u16) c_int;
     extern fn modulus_ui_engine_flush_flip() c_int;
 } else struct {
@@ -57,6 +61,13 @@ pub const PresentStats = struct {
     px: u32 = 0,
     /// Packed tiles submitted (host bring-up / device ABI mirror).
     tiles: u32 = 0,
+    /// True when at least one rect was transposed by the CPU rather than the
+    /// PPA. Recorded for diagnostics; the flush direction does not use it yet
+    /// (see modulus_ui_engine_flush_rows).
+    cpu_wrote: bool = false,
+    /// Cache-sync calls the driver rejected — a dropped sync leaves a stale
+    /// band on the panel, so it must be visible rather than swallowed.
+    sync_errors: u32 = 0,
 };
 
 /// Matches firmware `k_dry_tile_w/h` — max packed stripe until PSRAM DMA.
@@ -98,16 +109,7 @@ pub fn hostFlushTile(
     host_last_flush_px = @intCast(need);
 }
 
-fn sinkTile(
-    tile: []const color.Rgb565,
-    tile_w: i32,
-    tile_h: i32,
-    panel_x: i32,
-    panel_y: i32,
-) error{InvalidArg}!void {
-    const need = try validateTile(tile, tile_w, tile_h, panel_x, panel_y);
-    host_last_flush_px = @intCast(need);
-}
+const sinkTile = hostFlushTile;
 
 /// Copy dirty set for present after rotate flush (engine keeps this).
 pub fn copyDirty(dst: *geom.DirtySet(geom.dirty_cap), src: *const geom.DirtySet(geom.dirty_cap)) void {
@@ -174,6 +176,8 @@ pub fn flushRotated(panel: *fb.PanelFb, logical: *const fb.LogicalFb, dirty: *co
         panel.blitRotated(logical, dirty.rects[i]);
         stats.px += panel.last_write_px;
         stats.rects += 1;
+        // Mixed frame: one CPU fallback rect makes the whole span need C2M.
+        if (!panel.last_write_was_dma and panel.last_write_px > 0) stats.cpu_wrote = true;
     }
     panel.last_write_px = stats.px;
     return stats;
@@ -188,19 +192,30 @@ pub fn presentRotated(
     logical: *const fb.LogicalFb,
     dirty: *const geom.DirtySet(geom.dirty_cap),
 ) PresentStats {
-    const stats = flushRotated(panel, logical, dirty);
+    var stats = flushRotated(panel, logical, dirty);
     if (!device_flush or !panel.hasBuffer()) return stats;
 
-    var panel_dirty: geom.DirtySet(geom.dirty_cap) = .{};
-    mapDirtyToPanel(&panel_dirty, dirty);
+    // Stack local by measurement: hoisting this to BSS moved the zig_ui
+    // high-water mark by 0 bytes — present runs after the paint tree, not
+    // under it. See Engine.flushDirty.
+    var panel_dirty_buf: geom.DirtySet(geom.dirty_cap) = .{};
+    const panel_dirty = &panel_dirty_buf;
+    mapDirtyToPanel(panel_dirty, dirty);
+    // One msync per rect, NOT one merged y-span. Merging looked like a win
+    // (flush_rows syncs whole panel rows, so rects sharing a row got synced
+    // twice) but the status bar sits at one end of the panel and the actions
+    // grid at the other, so min..max covered the whole framebuffer — the
+    // health line read a full 921600 px every frame. Per-rect over-syncs a
+    // little; the merged span over-synced everything.
     var i: usize = 0;
     while (i < panel_dirty.len) : (i += 1) {
         const r = panel_dirty.rects[i];
         if (r.isEmpty()) continue;
-        _ = FlushApi.modulus_ui_engine_flush_rows(
+        const rc = FlushApi.modulus_ui_engine_flush_rows(
             @intCast(@max(r.y, 0)),
             @intCast(@max(r.y + r.h, 0)),
         );
+        if (rc != 0) stats.sync_errors += 1;
     }
 
     if (FlushApi.modulus_ui_engine_flush_dual()) {

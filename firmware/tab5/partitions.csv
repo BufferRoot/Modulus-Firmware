@@ -1,7 +1,9 @@
 # Modulus Tab5 (ESP32-P4, 16 MB flash) partition table.
 # Zig UI omits LVGL widget/fonts/icons ROM — factory 4.5 MiB (was 5 MiB).
 # App ~3.88 MiB after strip (~84% at 0x480000). Headroom warn at 85%.
+# coredump: panic backtrace survives the reboot (idf.py coredump-info).
 # Name,   Type, SubType, Offset,   Size
 nvs,      data, nvs,     0x9000,   0x6000,
 phy_init, data, phy,     0xf000,   0x1000,
 factory,  app,  factory, 0x10000,  0x480000,
+coredump, data, coredump, 0x490000, 0x10000,

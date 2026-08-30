@@ -588,7 +588,7 @@ void modulus_wireless_rpc_poll_state(bool zigbee_on, bool thread_on)
             }
         }
     }
-    if (thread_on && modulus_c6_sdio_ready()) {
+    if (thread_on && modulus_wireless_transport_up() && modulus_c6_sdio_ready()) {
         uint8_t st[] = {THREAD_CMD_GET_STATE};
         (void)modulus_c6_sdio_send(ESP_THREAD_IF, st, sizeof(st));
     }

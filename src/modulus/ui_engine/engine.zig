@@ -81,6 +81,10 @@ const boot_credit: []const u8 = "Driven by M5Stack | Powered by Zig | Built on E
 
 const FocusKind = enum { none, gear, power, search, close };
 
+/// Host-only `device_stub_px` rotate-cost model. Off by default: it re-rotates
+/// the whole dirty set every frame just to produce a metric.
+const stub_px_metric = false;
+
 pub const Screen = enum { boot, dashboard, settings, power, pin, catalog };
 
 pub const FrameMetrics = struct {
@@ -133,6 +137,9 @@ pub const Engine = struct {
     cnc_ui_sink: ?*const fn (CncUiCmd) bool = null,
     /// Device: persist prefs + apply bright/vol after edits.
     prefs_dirty_sink: ?*const fn (*Engine) void = null,
+    /// OR of every spring stepped through `springStep` this tick. Reset at the
+    /// top of the spring block; read into `FrameMetrics.spring_active`.
+    spring_moving_acc: bool = false,
     gcode_sink: ?*const fn ([]const u8) void = null,
     power_restart_sink: ?*const fn () void = null,
     power_shutdown_sink: ?*const fn () void = null,
@@ -1095,7 +1102,7 @@ pub const Engine = struct {
             self.other_layout = settings_other_tabs.paint(
                 &self.logical,
                 self.theme,
-                self.prefs,
+                &self.prefs,
                 self.tab_selected,
                 scroll_i,
                 self.machPullProgress(),
@@ -1570,6 +1577,10 @@ pub const Engine = struct {
     }
 
     /// Settings interior change — full shell paint, present window AABB only.
+    pub fn requestSettingsRepaint(self: *Engine) void {
+        self.requestSettingsPresent();
+    }
+
     fn requestSettingsPresent(self: *Engine) void {
         self.needs_full_repaint = true;
         self.settings_present_window = true;
@@ -2479,6 +2490,7 @@ pub const Engine = struct {
                 .close, .secondary => self.closeExtra(),
                 .field0 => self.openTextPad(.wl_pass, "Wi-Fi password", self.prefs.wireless.draftPassSlice()),
                 .primary => {
+                    if (!self.prefs.wireless.wifi) self.prefs.wireless.wifi = true;
                     if (self.emitWireless(.{ .wifi_connect = .{
                         .ssid = self.prefs.wireless.ssidSlice(),
                         .pass = self.prefs.wireless.draftPassSlice(),
@@ -2505,6 +2517,7 @@ pub const Engine = struct {
                 },
                 .field0 => self.openTextPad(.wl_bt_passkey, "Passkey", self.prefs.wireless.btPasskeySlice()),
                 .primary => {
+                    if (!self.prefs.wireless.bt) self.prefs.wireless.bt = true;
                     if (self.prefs.wireless.bt_pair_idx != 0xff) {
                         if (self.emitWireless(.{ .ble_pair = .{
                             .idx = self.prefs.wireless.bt_pair_idx,
@@ -3060,6 +3073,7 @@ pub const Engine = struct {
         }
         if (hit == .wl_bt_dev0 or hit == .wl_bt_dev1) {
             const idx: u8 = if (hit == .wl_bt_dev0) 0 else 1;
+            if (!self.prefs.wireless.bt) self.prefs.wireless.bt = true;
             self.prefs.wireless.beginBtPair(idx);
             self.openExtra(.bt_passkey);
             return true;
@@ -3068,8 +3082,10 @@ pub const Engine = struct {
             const p = self.prefs.wireless.page;
             if (p == 1) {
                 if (!self.prefs.wireless.wifi) {
-                    self.showSnackbar("Enable Wi-Fi radio first");
-                } else if (self.emitWireless(.scan) or blk: {
+                    self.prefs.wireless.wifi = true;
+                    self.applyPrefs();
+                }
+                if (self.emitWireless(.scan) or blk: {
                     if (self.wifi_scan_sink) |scan| {
                         scan(self);
                         break :blk true;
@@ -3083,8 +3099,10 @@ pub const Engine = struct {
                 }
             } else if (p == 2) {
                 if (!self.prefs.wireless.bt) {
-                    self.showSnackbar("Enable Bluetooth first");
-                } else if (self.emitWireless(.scan)) {
+                    self.prefs.wireless.bt = true;
+                    self.applyPrefs();
+                }
+                if (self.emitWireless(.scan)) {
                     self.showSnackbar("Scanning BLE...");
                 } else {
                     self.prefs.wireless.startBtScan();
@@ -3093,10 +3111,12 @@ pub const Engine = struct {
             } else if (p == 3) {
                 if (!self.prefs.wireless.espnow) {
                     self.showSnackbar("Enable ESP-NOW first");
-                } else if (self.emitWireless(.scan)) {
-                    self.showSnackbar("Scanning peers...");
                 } else {
+                    // Paint "Scanning..." this frame — C scan is async.
                     self.prefs.wireless.startEnScan();
+                    if (!self.emitWireless(.scan)) {
+                        // Host soft path already started above.
+                    }
                     self.showSnackbar("Scanning peers...");
                 }
             } else if (p == 4) {
@@ -3580,6 +3600,14 @@ pub const Engine = struct {
                     self.prefs.syncEspnowMacFromBridge();
                     self.showSnackbar("Bridge MAC saved");
                 }
+                self.pad.clear();
+                self.applyPrefs();
+                // CNC already on ESP-NOW: peer change must reinit (flush+open).
+                if (self.prefs.cnc.conn == 0 and !self.prefs.cnc.transport_off) {
+                    if (self.transport_reinit_sink) |s| s();
+                }
+                self.afterPadDismiss();
+                return;
             },
             .cnc_masso_ip => {
                 const n = @min(txt.len, self.prefs.cnc.masso_ip.len);
@@ -3791,7 +3819,21 @@ pub const Engine = struct {
                         return;
                     }
                     settings_menu.apply(&self.prefs, self.menu_target, idx);
+                    // ESP-NOW / transport change: enable radio + require peer before reinit.
+                    if (self.menu_target == .conn and self.prefs.cnc.conn == 0) {
+                        self.prefs.syncEspnowMacFromBridge();
+                        if (self.prefs.espnowMacForNvs().len == 0) {
+                            self.applyPrefs();
+                            self.closeMenu();
+                            self.showSnackbarError("Set ESP-NOW peer MAC first");
+                            return;
+                        }
+                        if (!self.prefs.wireless.espnow) self.prefs.wireless.espnow = true;
+                    }
                     self.applyPrefs();
+                    if (self.menu_target == .conn or self.menu_target == .proto) {
+                        if (self.transport_reinit_sink) |s| s();
+                    }
                     if (self.menu_target == .wcs) {
                         const bit: u8 = @as(u8, 1) << @intCast(@min(idx, 5));
                         if ((self.prefs.dash.wcs_lock & bit) != 0) {
@@ -4305,7 +4347,7 @@ pub const Engine = struct {
                             self.requestFull();
                             return;
                         }
-                        if (self.prefs.cnc.conn == 0 or self.prefs.cnc.transport_off) {
+                        if (self.prefs.cnc.transport_off) {
                             self.showSnackbar("Pick a transport first");
                             self.requestFull();
                             return;
@@ -4324,6 +4366,28 @@ pub const Engine = struct {
                         }) {}
                         self.applyPrefs();
                         self.showSnackbar("Disconnected");
+                        self.requestFull();
+                        return;
+                    }
+                    if (r.hit == .wl_connect_saved) {
+                        if (!self.prefs.wireless.wifi) self.prefs.wireless.wifi = true;
+                        if (self.emitWireless(.wifi_connect_saved)) {
+                            self.showSnackbar("Connecting...");
+                        } else {
+                            self.prefs.wireless.connectSaved();
+                            self.showSnackbar("Connected");
+                        }
+                        self.applyPrefs();
+                        self.requestFull();
+                        return;
+                    }
+                    if (r.hit == .wl_forget) {
+                        if (self.emitWireless(.wifi_forget)) {
+                            self.showSnackbar("Network forgotten");
+                        } else {
+                            _ = settings_other_tabs.applyHit(&self.prefs, r.hit, r.seg, x, y, self.other_layout, r.slot_i);
+                        }
+                        self.applyPrefs();
                         self.requestFull();
                         return;
                     }
@@ -4352,6 +4416,10 @@ pub const Engine = struct {
                             self.prefs.syncEspnowMacFromBridge();
                         }
                         self.applyPrefs();
+                        if (self.prefs.cnc.conn == 0 and !self.prefs.cnc.transport_off) {
+                            self.prefs.cnc.startConnect();
+                            if (self.transport_reinit_sink) |s| s();
+                        }
                         self.requestFull();
                         return;
                     }
@@ -4364,16 +4432,25 @@ pub const Engine = struct {
                             self.prefs.syncEspnowMacFromBridge();
                         }
                         self.applyPrefs();
+                        if (self.prefs.cnc.conn == 0 and !self.prefs.cnc.transport_off) {
+                            self.prefs.cnc.startConnect();
+                            if (self.transport_reinit_sink) |s| s();
+                        }
                         self.requestFull();
                         return;
                     }
                     if (r.hit == .wl_en_rm0 or r.hit == .wl_en_rm1) {
                         const idx: u8 = if (r.hit == .wl_en_rm0) 0 else 1;
+                        const was_active = self.prefs.wireless.en_active == idx;
                         if (!self.emitWireless(.{ .en_delete_saved = idx })) {
                             self.prefs.wireless.removeSavedPeer(idx);
                             self.prefs.syncEspnowMacFromBridge();
                         }
                         self.applyPrefs();
+                        if (was_active and self.prefs.cnc.conn == 0 and !self.prefs.cnc.transport_off) {
+                            if (self.transport_reinit_sink) |s| s();
+                        }
+                        self.showSnackbar("Peer removed");
                         self.requestFull();
                         return;
                     }
@@ -4383,24 +4460,34 @@ pub const Engine = struct {
                             self.prefs.syncEspnowMacFromBridge();
                         }
                         self.applyPrefs();
-                        self.showSnackbar("Peers cleared");
+                        self.showSnackbar("All saved peers cleared");
                         self.requestFull();
                         return;
                     }
                     if (r.hit == .wl_zb_join) {
+                        if (!self.prefs.wireless.zigbee) {
+                            self.prefs.wireless.zigbee = true;
+                        }
                         if (!self.emitWireless(.zb_join)) {
                             self.prefs.wireless.joinZigbee();
+                            self.showSnackbar("Zigbee hub joined");
+                        } else {
+                            self.prefs.wireless.zb_join_pending = true;
+                            self.showSnackbar("Zigbee joining...");
                         }
                         self.applyPrefs();
-                        self.showSnackbar("Zigbee join...");
                         self.requestFull();
                         return;
                     }
                     if (r.hit == .wl_zb_leave) {
                         if (!self.emitWireless(.zb_leave)) {
                             self.prefs.wireless.leaveZigbee();
+                        } else {
+                            self.prefs.wireless.zb_join_pending = false;
+                            self.prefs.wireless.zb_joined = false;
                         }
                         self.applyPrefs();
+                        self.showSnackbar("Zigbee left");
                         self.requestFull();
                         return;
                     }
@@ -4518,6 +4605,19 @@ pub const Engine = struct {
                         return;
                     }
                     if (r.hit == .cnc_connect) {
+                        // ESP-NOW CNC needs radio + bridge peer before transport open.
+                        if (self.prefs.cnc.conn == 0 and !self.prefs.cnc.transport_off) {
+                            self.prefs.syncEspnowMacFromBridge();
+                            const mac = self.prefs.espnowMacForNvs();
+                            if (mac.len == 0) {
+                                self.showSnackbarError("Set ESP-NOW peer MAC first");
+                                self.requestFull();
+                                return;
+                            }
+                            if (!self.prefs.wireless.espnow) {
+                                self.prefs.wireless.espnow = true;
+                            }
+                        }
                         self.startBusy(60);
                         _ = settings_other_tabs.applyHit(&self.prefs, r.hit, r.seg, x, y, self.other_layout, r.slot_i);
                         self.applyPrefs();
@@ -5218,26 +5318,32 @@ pub const Engine = struct {
             }
         }
 
-        const scroll_moving = self.scroll.step(dt_sec);
+        // Every spring result is OR'd into `spring_active` so the frame loop
+        // keeps repainting while anything animates. Listing 26 `*_moving`
+        // locals by hand meant one forgotten term = an animation that silently
+        // stalls mid-flight, with no compiler help. `springStep` accumulates
+        // instead: any spring stepped through it counts, automatically.
+        self.spring_moving_acc = false;
+        const scroll_moving = self.springStep(self.scroll.step(dt_sec));
         if (self.screen == .settings) self.clampSettingsScroll();
-        const tab_axis_moving = self.tab_axis.step(dt_sec);
-        const qs_tab_moving = self.qs_tab_axis.step(dt_sec);
+        const tab_axis_moving = self.springStep(self.tab_axis.step(dt_sec));
+        const qs_tab_moving = self.springStep(self.qs_tab_axis.step(dt_sec));
         const press_was_visible = self.press_fx.value > 0.02;
-        var press_moving = self.press_fx.step(dt_sec);
+        var press_moving = self.springStep(self.press_fx.step(dt_sec));
         if (self.press_fx.settled() and self.press_fx.target >= 0.99) {
             self.press_fx.setTarget(0);
             press_moving = true;
         }
         const press_stain_clear = press_was_visible and self.press_fx.value <= 0.02 and self.press_fx.settled();
-        const dialog_moving = self.dialog_fx.step(dt_sec);
-        const power_moving = self.power_fx.step(dt_sec);
-        const power_confirm_moving = self.power_confirm_fx.step(dt_sec);
-        const settings_confirm_moving = self.settings_confirm_fx.step(dt_sec);
-        const cnc_overlay_moving = self.cnc_overlay_fx.step(dt_sec);
-        const dash_overlay_moving = self.dash_overlay_fx.step(dt_sec);
-        const pin_overlay_moving = self.pin_overlay_fx.step(dt_sec);
-        const mach_str_moving = self.mach_str_fx.step(dt_sec);
-        const extra_moving = self.extra_fx.step(dt_sec);
+        _ = self.springStep(self.dialog_fx.step(dt_sec));
+        const power_moving = self.springStep(self.power_fx.step(dt_sec));
+        const power_confirm_moving = self.springStep(self.power_confirm_fx.step(dt_sec));
+        const settings_confirm_moving = self.springStep(self.settings_confirm_fx.step(dt_sec));
+        const cnc_overlay_moving = self.springStep(self.cnc_overlay_fx.step(dt_sec));
+        const dash_overlay_moving = self.springStep(self.dash_overlay_fx.step(dt_sec));
+        const pin_overlay_moving = self.springStep(self.pin_overlay_fx.step(dt_sec));
+        const mach_str_moving = self.springStep(self.mach_str_fx.step(dt_sec));
+        const extra_moving = self.springStep(self.extra_fx.step(dt_sec));
         if (self.probe_busy_frames > 0) {
             if (self.probe_busy_sink) |busy| {
                 if (!busy()) {
@@ -5265,14 +5371,14 @@ pub const Engine = struct {
             self.busy_phase += dt_sec * 2.5;
             if (self.busy_phase > 1) self.busy_phase -= 1;
         }
-        const sheet_moving = self.sheet_y.step(dt_sec);
-        const theme_moving = self.theme_fx.step(dt_sec);
-        const led_moving = self.led_morph.step(dt_sec);
+        const sheet_moving = self.springStep(self.sheet_y.step(dt_sec));
+        const theme_moving = self.springStep(self.theme_fx.step(dt_sec));
+        const led_moving = self.springStep(self.led_morph.step(dt_sec));
         self.cnc.led_morph = self.led_morph.value;
-        const dro_sel_moving = self.dro_select.step(dt_sec);
+        const dro_sel_moving = self.springStep(self.dro_select.step(dt_sec));
         self.cnc.dro.select_fx = self.dro_select.value;
         self.job_fx.setTarget(self.cnc.job_progress);
-        const job_moving = self.job_fx.step(dt_sec);
+        const job_moving = self.springStep(self.job_fx.step(dt_sec));
         self.cnc.job_progress_vis = self.job_fx.value;
         // Expressive wave: advance phase always, but only dirty every 3rd frame
         // when progress is settled — continuous wave was pinning idle rotate_px.
@@ -5286,16 +5392,16 @@ pub const Engine = struct {
         self.feed_fx.setTarget(@floatFromInt(self.cnc.feed_pct));
         self.spindle_fx.setTarget(@floatFromInt(self.cnc.spindle_pct));
         self.rapid_fx.setTarget(@floatFromInt(self.cnc.rapid_pct));
-        const feed_moving = self.feed_fx.step(dt_sec);
-        const spindle_moving = self.spindle_fx.step(dt_sec);
-        const rapid_moving = self.rapid_fx.step(dt_sec);
+        const feed_moving = self.springStep(self.feed_fx.step(dt_sec));
+        const spindle_moving = self.springStep(self.spindle_fx.step(dt_sec));
+        const rapid_moving = self.springStep(self.rapid_fx.step(dt_sec));
         self.cnc.feed_vis = self.feed_fx.value;
         self.cnc.spindle_vis = self.spindle_fx.value;
         self.cnc.rapid_vis = self.rapid_fx.value;
-        const dro_scroll_moving = self.dro_scroll.step(dt_sec);
+        const dro_scroll_moving = self.springStep(self.dro_scroll.step(dt_sec));
         self.cnc.dro.scroll_px = i32FromF(self.dro_scroll.value);
-        const widget_moving = self.widget_fx.stepAll(dt_sec);
-        const snack_moving = self.snack_fx.step(dt_sec);
+        const widget_moving = self.springStep(self.widget_fx.stepAll(dt_sec));
+        _ = self.springStep(self.snack_fx.step(dt_sec));
         const dump_moving = if (self.cnc_overlay == .dump) blk: {
             if (self.dump_tick_sink) |dtick| break :blk dtick(&self.cnc_dump);
             break :blk self.cnc_dump.tick();
@@ -5352,13 +5458,13 @@ pub const Engine = struct {
             self.prefs.system.tickOneSec();
             // Host-only soft gauges. Device: HAL / driver mirrors own these.
             if (self.now_us_sink == null) {
-                self.prefs.power.tickTelemetry();
-                self.cnc.battery_pct = self.prefs.power.bat_pct;
-                self.cnc.battery_charge_state = self.prefs.power.charge_state;
-                self.cnc.battery_charging = self.prefs.power.charge_state == 1 or self.prefs.power.charge_state == 2;
+                self.prefs.power_tel.tickTelemetry();
+                self.cnc.battery_pct = self.prefs.power_tel.bat_pct;
+                self.cnc.battery_charge_state = self.prefs.power_tel.charge_state;
+                self.cnc.battery_charging = self.prefs.power_tel.charge_state == 1 or self.prefs.power_tel.charge_state == 2;
                 self.cnc.battery_fast_charge = battery_chrome.isFastCharge(
-                    self.prefs.power.charge_state,
-                    @abs(self.prefs.power.bat_ma),
+                    self.prefs.power_tel.charge_state,
+                    @abs(self.prefs.power_tel.bat_ma),
                 );
                 self.prefs.wireless.tickTelemetry();
             }
@@ -5627,10 +5733,34 @@ pub const Engine = struct {
             .dirty_px = self.panel.last_write_px,
             .rotate_px = self.panel.last_write_px,
             .present_px = self.present_dirty.totalArea(),
-            .device_stub_px = if (comptime @import("builtin").os.tag == .freestanding) 0 else flush_shim.submitDirtyTiles(&self.logical, &self.present_dirty).px,
-            .spring_active = scroll_moving or tab_axis_moving or qs_tab_moving or press_moving or dialog_moving or power_moving or power_confirm_moving or settings_confirm_moving or cnc_overlay_moving or dash_overlay_moving or pin_overlay_moving or mach_str_moving or extra_moving or sheet_moving or catalog_moving or theme_moving or led_moving or dro_sel_moving or dro_scroll_moving or job_moving or job_wave_moving or feed_moving or spindle_moving or rapid_moving or widget_moving or snack_moving or dump_moving or self.snack_frames > 0 or self.dialog_open or self.busy_frames > 0 or self.mach_pull_polls != 0 or self.probe_busy_frames > 0 or self.qs_slider != .none or self.qs_content_dirty or (live and self.cnc_ui_sink == null and self.cnc.actions.phase == .run and self.cnc.job_progress < 1),
+            // Host-only rotate-cost model. It re-rotates the whole dirty set
+            // into tiles purely to produce a number, so it roughly doubles
+            // host rotate cost and makes `ui-demo-bench` unrepresentative of
+            // the thing it benchmarks. Opt in with -Dstub-px.
+            .device_stub_px = if (comptime !stub_px_metric) 0 else flush_shim.submitDirtyTiles(&self.logical, &self.present_dirty).px,
+            // 26 spring results are folded in by `springStep` as they are
+            // stepped; only the non-spring hold conditions are listed here.
+            .spring_active = self.spring_moving_acc or
+                self.snack_frames > 0 or
+                self.dialog_open or
+                self.busy_frames > 0 or
+                self.mach_pull_polls != 0 or
+                self.probe_busy_frames > 0 or
+                self.qs_slider != .none or
+                self.qs_content_dirty or
+                (live and self.cnc_ui_sink == null and
+                    self.cnc.actions.phase == .run and self.cnc.job_progress < 1),
         };
         return self.metrics;
+    }
+
+    /// Fold a spring's "still moving" result into `spring_moving_acc` and pass
+    /// it through, so callers read exactly as before. Wrapping every
+    /// `.step(dt)` in this is what makes the repaint condition impossible to
+    /// under-count — a new spring is covered the moment it is stepped.
+    fn springStep(self: *Engine, moving: bool) bool {
+        self.spring_moving_acc = self.spring_moving_acc or moving;
+        return moving;
     }
 
     fn flushDirty(self: *Engine) void {
@@ -5644,8 +5774,21 @@ pub const Engine = struct {
         // Dual FB: the back buffer holds the frame before last, so it is stale
         // wherever last frame painted. Repaint that damage or the flip shows it —
         // the status bar / menu flicker and the frozen band under the app bar.
+        // Stack local, not task-scoped scratch: measured on device, hoisting
+        // this (and the two in flush_shim) to BSS moved the zig_ui high-water
+        // mark by exactly 0 bytes. flushDirty runs at the end of tick, never
+        // nested inside the settings paint tree that owns the deep frames, so
+        // it costs 3 KB of internal RAM for nothing.
         var own: geom.DirtySet(geom.dirty_cap) = .{};
         flush_shim.copyDirty(&own, &self.dirty);
+        // Coalesce BEFORE folding. `dirty` can already hold up to dirty_cap
+        // rects and fold adds up to dirty_cap more from prev_dirty, so an
+        // ungated fold can overflow the cap — and overflow collapses the whole
+        // set to one AABB, i.e. a full-frame rotate. Dual buffering doubles the
+        // rect count feeding that cap, so it is exactly the config that trips
+        // it. Watch `merge-all` in the zig_ui health line; a rising count means
+        // dirty_cap is too small for the busiest screen.
+        coalesceDenseDirty(&self.dirty);
         if (flush_shim.dualBuffered()) foldStaleDamage(&self.dirty, &self.prev_dirty);
         coalesceDenseDirty(&self.dirty);
         flush_shim.copyDirty(&self.present_dirty, &self.dirty);
@@ -6586,8 +6729,8 @@ test "device clock sink does not fake-discharge battery" {
         }
     }.us;
     eng.cnc.battery_pct = 95;
-    eng.prefs.power.bat_pct = 95;
-    eng.prefs.power.charge_state = 0;
+    eng.prefs.power_tel.bat_pct = 95;
+    eng.prefs.power_tel.charge_state = 0;
     eng.prefs.machine.odo_mm = 1000;
     eng.prefs.wireless.espnow = true;
     eng.prefs.wireless.live_en_saved_n = 0;
@@ -6598,7 +6741,7 @@ test "device clock sink does not fake-discharge battery" {
         _ = eng.tick(1.0);
     }
     try std.testing.expectEqual(@as(u8, 95), eng.cnc.battery_pct);
-    try std.testing.expectEqual(@as(u8, 95), eng.prefs.power.bat_pct);
+    try std.testing.expectEqual(@as(u8, 95), eng.prefs.power_tel.bat_pct);
     try std.testing.expectEqual(@as(u32, 1000), eng.prefs.machine.odo_mm);
     try std.testing.expectEqual(@as(u32, 10), eng.prefs.wireless.en_rx);
     try std.testing.expectEqual(@as(u32, 5), eng.prefs.wireless.en_tx);

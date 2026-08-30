@@ -43,6 +43,9 @@ function Ensure-IdfEnv {
     if (-not (Test-Path -LiteralPath $export)) {
         Write-Error "Missing export.ps1 at $export"
     }
+    # export.ps1 picks the venv from whichever `python` is first on PATH; pin it.
+    . "$PSScriptRoot\_idf_env.ps1"
+    Set-IdfPythonEnv
     & $export | Out-Null
 }
 

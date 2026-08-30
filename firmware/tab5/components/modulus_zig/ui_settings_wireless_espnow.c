@@ -30,14 +30,7 @@ void espnow_toggle_cb(lv_event_t *e)
 {
     const bool on = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
     if (on) {
-        if (!modulus_wireless_ready() && !modulus_wireless_wake_coprocessor()) {
-            lv_obj_remove_state(lv_event_get_target(e), LV_STATE_CHECKED);
-            modulus_audio_play_ui(MODULUS_UI_SOUND_DROP);
-        } else if (!modulus_wireless_ensure_wifi_stack() &&
-                   !modulus_wireless_wake_coprocessor()) {
-            lv_obj_remove_state(lv_event_get_target(e), LV_STATE_CHECKED);
-            modulus_audio_play_ui(MODULUS_UI_SOUND_DROP);
-        } else if (!modulus_wireless_espnow_enable()) {
+        if (!modulus_wireless_espnow_enable()) {
             lv_obj_remove_state(lv_event_get_target(e), LV_STATE_CHECKED);
             modulus_audio_play_ui(MODULUS_UI_SOUND_DROP);
         } else if (modulus_nvs_get_u8("cnc_conn", 4) == 0) {
@@ -57,6 +50,9 @@ void dd_u8_cb(lv_event_t *e)
 {
     const char *key = lv_event_get_user_data(e);
     modulus_nvs_set_u8(key, (uint8_t)lv_dropdown_get_selected(lv_event_get_target(e)));
+    if (strcmp(key, "en_chan") == 0) {
+        modulus_wireless_espnow_channel_reload();
+    }
     if (strcmp(key, "en_chan") == 0 || strcmp(key, "en_rate") == 0) {
         wl_maybe_reinit_espnow_transport();
     }

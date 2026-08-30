@@ -54,6 +54,7 @@ pub fn applyBrightVol(p: *const settings_prefs.Prefs) void {
 var g_last_tone: u8 = 255;
 var g_last_wifi: u8 = 255;
 var g_last_bt: u8 = 255;
+var g_prev_bt_on: bool = false;
 var g_last_espnow: u8 = 255;
 var g_last_zb: u8 = 255;
 var g_last_th: u8 = 255;
@@ -69,12 +70,10 @@ fn applyDisplayTimeouts(p: *const settings_prefs.Prefs) void {
 }
 
 fn tryEnableRadio(comptime name: []const u8, enable: *const fn () callconv(.c) c_int) bool {
-    if (enable() != 0) return true;
-    // LVGL parity: wake C6 then retry (SDIO / wifi stack may be down after P4-only flash).
-    if (c.modulus_wireless_wake_coprocessor_zi() == 0) return false;
-    if (enable() != 0) return true;
+    // Radio enable workers own C6 wake — never call wake_coprocessor here.
+    // (BLE/Wi-Fi host init can block many seconds; UI thread must stay free.)
     _ = name;
-    return false;
+    return enable() != 0;
 }
 
 fn applyWirelessRadios(p: *settings_prefs.Prefs) void {
@@ -130,7 +129,10 @@ fn applyWirelessRadios(p: *settings_prefs.Prefs) void {
     if (th != g_last_th) {
         g_last_th = th;
         if (p.wireless.thread) {
-            if (!tryEnableRadio("thread", c.modulus_wireless_thread_enable_zi)) {
+            if (!c.modulus_wireless_thread_supported()) {
+                p.wireless.thread = false;
+                g_last_th = 0;
+            } else if (!tryEnableRadio("thread", c.modulus_wireless_thread_enable_zi)) {
                 p.wireless.thread = false;
                 g_last_th = 0;
             }
@@ -180,7 +182,14 @@ fn syncEspnowSaved(eng: *Engine) void {
         var macbuf: [18]u8 = undefined;
         c.modulus_wireless_espnow_peer_mac_str(@ptrCast(&macbuf), macbuf.len);
         const mac = std.mem.sliceTo(&macbuf, 0);
-        if (mac.len > 0 and !std.mem.eql(u8, mac, "None")) {
+        const unset = mac.len == 0 or std.mem.eql(u8, mac, "None") or
+            std.mem.eql(u8, mac, "FF:FF:FF:FF:FF:FF");
+        if (unset) {
+            @memset(&w.en_bridge, 0);
+            const none = "None";
+            @memcpy(w.en_bridge[0..none.len], none);
+            @memset(&eng.prefs.cnc.espnow_mac, 0);
+        } else {
             copySliceTo(w.en_bridge[0..], mac);
         }
     }
@@ -253,35 +262,110 @@ pub fn wirelessPoll(eng: *Engine) void {
     c.modulus_wireless_zigbee_join_poll();
 
     const w = &eng.prefs.wireless;
+    const was_bt_on = g_prev_bt_on;
     // While prefs flush is pending, do not stomp enable bits with HW (toggle race).
     // Connection / counters still refresh.
     if (!g_prefs_dirty) {
         w.wifi = c.modulus_wireless_wifi_is_enabled();
         w.bt = c.modulus_wireless_ble_is_enabled();
         w.espnow = c.modulus_wireless_espnow_is_enabled();
+        // Keep edge detectors aligned after async enable fail (toggle would stick).
+        g_last_wifi = @intFromBool(w.wifi);
+        g_last_bt = @intFromBool(w.bt);
+        g_last_espnow = @intFromBool(w.espnow);
     }
+    const was_wifi_conn = w.wifi_conn;
+    const was_wifi_connecting = w.wifi_connecting;
+    const was_bt_conn = w.bt_conn;
+    const was_bt_connecting = w.bt_connecting;
+    w.wifi_connecting = c.modulus_wireless_wifi_is_connecting();
     w.wifi_conn = c.modulus_wireless_wifi_is_connected();
     if (w.wifi_conn) {
         copyCStr(w.ssid[0..], c.modulus_wireless_wifi_ssid_text());
         copyCStr(w.ip[0..], c.modulus_wireless_wifi_ip_text());
+    } else if (w.wifi_connecting and w.ssidSlice().len == 0) {
+        copyCStr(w.ssid[0..], c.modulus_wireless_wifi_ssid_text());
     }
+    copyCStr(w.wifi_status[0..], c.modulus_wireless_wifi_radio_text());
 
     if (w.bt) {
+        w.bt_connecting = c.modulus_wireless_ble_is_connecting();
         w.bt_conn = c.modulus_wireless_ble_is_connected();
         if (w.bt_conn) {
             copyCStr(w.bt_name[0..], c.modulus_wireless_ble_paired_text());
         }
     } else {
+        w.bt_connecting = false;
         w.bt_conn = false;
+    }
+    copyCStr(w.bt_status[0..], c.modulus_wireless_ble_status_text());
+
+    if (was_bt_on and !w.bt and c.modulus_wireless_ble_enable_failed()) {
+        if (!(c.modulus_c6_sdio_ready() and c.modulus_wireless_transport_up())) {
+            eng.showSnackbarError("Bluetooth failed — C6 offline (dual-flash C6 UART COM18)");
+        } else {
+            eng.showSnackbarError("Bluetooth failed — retry or reboot Tab5");
+        }
+        eng.requestFull();
+    }
+    g_prev_bt_on = w.bt;
+
+    if (was_wifi_connecting and !w.wifi_connecting) {
+        if (!w.wifi_conn) {
+            const err = std.mem.span(c.modulus_wireless_wifi_error_text());
+            if (err.len > 0) {
+                eng.showSnackbarError(err);
+            } else {
+                eng.showSnackbarError("Wi-Fi connection failed");
+            }
+            eng.requestFull();
+        }
+    }
+    if (!was_wifi_conn and w.wifi_conn) {
+        eng.showSnackbar("Wi-Fi connected");
+        eng.requestFull();
+        const cnc = eng.prefs.cnc;
+        if (!cnc.transport_off and (cnc.conn == 1 or cnc.conn == 2) and !cnc.session_up) {
+            if (eng.transport_reinit_sink) |s| s();
+        }
+    }
+    if (was_bt_connecting and !w.bt_connecting and !w.bt_conn) {
+        const st = std.mem.span(c.modulus_wireless_ble_status_text());
+        if (std.mem.indexOf(u8, st, "failed") != null or std.mem.indexOf(u8, st, "Failed") != null) {
+            eng.showSnackbarError("Bluetooth pairing failed");
+            eng.requestFull();
+        }
+    } else if (!was_bt_conn and w.bt_conn) {
+        eng.showSnackbar("Bluetooth connected");
+        eng.requestFull();
     }
 
     w.en_tx = c.modulus_wireless_espnow_tx_count();
     w.en_rx = c.modulus_wireless_espnow_rx_count();
     syncEspnowSaved(eng);
 
+    const was_zb_pending = w.zb_join_pending;
+    w.zb_join_pending = c.modulus_wireless_zigbee_join_pending();
     w.zb_joined = c.modulus_wireless_zigbee_can_control();
+    w.thread_supported = c.modulus_wireless_thread_supported();
+    if (!w.thread_supported) {
+        w.thread = false;
+    }
     w.th_attached = c.modulus_wireless_thread_can_control();
-    copyCStr(w.zb_status[0..], c.modulus_wireless_zigbee_status_text());
+    if (was_zb_pending and !w.zb_join_pending) {
+        if (w.zb_joined) {
+            eng.showSnackbar("Zigbee hub joined");
+            eng.requestFull();
+        } else {
+            eng.showSnackbarError("Zigbee join failed — check NanoH2 / Grove / EXT 5V");
+            eng.requestFull();
+        }
+    }
+    if (w.zb_join_pending and !w.zb_joined) {
+        copySliceTo(w.zb_status[0..], "Joining hub...");
+    } else {
+        copyCStr(w.zb_status[0..], c.modulus_wireless_zigbee_status_text());
+    }
     copyCStr(w.zb_network[0..], c.modulus_wireless_zigbee_network_text());
     syncZbDevices(w);
     syncThDevices(w);
@@ -294,13 +378,18 @@ pub fn wirelessPoll(eng: *Engine) void {
             var ap: c.modulus_wifi_ap_t = undefined;
             if (!c.modulus_wireless_wifi_scan_get(i, &ap)) continue;
             const ssid = std.mem.sliceTo(&ap.ssid, 0);
+            if (ssid.len == 0) continue; // skip hidden / empty
             copySliceTo(&w.live_ap[w.live_ap_n], ssid);
             w.live_ap_n += 1;
         }
         w.scan_n = w.live_ap_n;
         w.scan_phase = 2;
         w.wifi_scan_hw = false;
-        eng.requestFull();
+        w.scan_c6_down = w.scan_n == 0 and !(c.modulus_c6_sdio_ready() and c.modulus_wireless_transport_up());
+        if (w.scan_c6_down) {
+            eng.showSnackbarError("C6 offline — dual-flash C6 UART (COM18)");
+        }
+        eng.requestSettingsRepaint();
     }
 
     if (w.bt_scan_phase == 1 and c.modulus_wireless_ble_scan_done()) {
@@ -324,7 +413,14 @@ pub fn wirelessPoll(eng: *Engine) void {
         w.bt_scan_n = w.live_bt_n;
         w.bt_scan_phase = 2;
         w.bt_scan_hw = false;
-        eng.requestFull();
+        if (w.bt_scan_n == 0) {
+            if (!(c.modulus_c6_sdio_ready() and c.modulus_wireless_transport_up())) {
+                eng.showSnackbarError("No BLE devices — C6 offline (dual-flash COM18)");
+            } else if (!c.modulus_wireless_ble_is_enabled()) {
+                eng.showSnackbarError("No BLE devices — radio off");
+            }
+        }
+        eng.requestSettingsRepaint();
     }
 
     if (w.en_scan_phase == 1) {
@@ -333,7 +429,7 @@ pub fn wirelessPoll(eng: *Engine) void {
             w.en_peer_n = 0;
             w.en_scan_hw = false;
             eng.showSnackbar("ESP-NOW scan failed");
-            eng.requestFull();
+            eng.requestSettingsRepaint();
         } else if (c.modulus_wireless_espnow_scan_done()) {
             const count = c.modulus_wireless_espnow_scan_count();
             w.live_en_n = 0;
@@ -347,7 +443,7 @@ pub fn wirelessPoll(eng: *Engine) void {
             w.en_peer_n = w.live_en_n;
             w.en_scan_phase = 2;
             w.en_scan_hw = false;
-            eng.requestFull();
+            eng.requestSettingsRepaint();
         }
     }
 
@@ -402,17 +498,31 @@ fn wirelessScanStart(eng: *Engine) void {
     const w = &eng.prefs.wireless;
     switch (w.page) {
         1 => {
+            // Radio must be up before C6 scan (toggle can race enable worker).
+            if (!w.wifi) {
+                w.wifi = true;
+                applyWirelessRadios(&eng.prefs);
+            }
             w.live_ap_n = 0;
             w.startWifiScan();
             w.wifi_scan_hw = true;
+            // Worker may wake C6 (seconds); stay on Scanning until scan_done.
             if (!c.modulus_wireless_wifi_scan_start()) {
                 w.wifi_scan_hw = false;
                 w.scan_phase = 2;
                 w.scan_n = 0;
-                eng.showSnackbar("Wi-Fi scan failed");
+                w.scan_c6_down = !(c.modulus_c6_sdio_ready() and c.modulus_wireless_transport_up());
+                eng.showSnackbarError(if (w.scan_c6_down)
+                    "C6 offline — dual-flash C6 UART (COM18)"
+                else
+                    "Wi-Fi scan failed");
             }
         },
         2 => {
+            if (!w.bt) {
+                w.bt = true;
+                applyWirelessRadios(&eng.prefs);
+            }
             w.live_bt_n = 0;
             w.startBtScan();
             w.bt_scan_hw = true;
@@ -420,13 +530,18 @@ fn wirelessScanStart(eng: *Engine) void {
                 w.bt_scan_hw = false;
                 w.bt_scan_phase = 2;
                 w.bt_scan_n = 0;
-                eng.showSnackbar("BLE scan failed");
+                const c6_down = !(c.modulus_c6_sdio_ready() and c.modulus_wireless_transport_up());
+                eng.showSnackbarError(if (c6_down)
+                    "BLE scan failed — C6 offline (dual-flash COM18)"
+                else
+                    "BLE scan failed — enable radio / wait for Ready");
             }
         },
         3 => {
             w.live_en_n = 0;
             w.startEnScan();
             w.en_scan_hw = true;
+            eng.requestSettingsRepaint(); // show Scanning... before worker finishes
             if (!c.modulus_wireless_espnow_scan_start()) {
                 w.en_scan_hw = false;
                 w.en_scan_phase = 2;
@@ -469,12 +584,48 @@ pub fn wirelessCmd(eng: *Engine, cmd: ui_engine.engine.WirelessUiCmd) void {
     switch (cmd) {
         .scan => wirelessScanStart(eng),
         .wifi_connect => |p| {
+            if (!eng.prefs.wireless.wifi) {
+                eng.prefs.wireless.wifi = true;
+                applyWirelessRadios(&eng.prefs);
+            }
             var sbuf: [33]u8 = undefined;
             var pbuf: [64]u8 = undefined;
-            _ = c.modulus_wireless_wifi_connect(zTerm(&sbuf, p.ssid).ptr, zTerm(&pbuf, p.pass).ptr);
+            const ssid = zTerm(&sbuf, p.ssid);
+            const pass = zTerm(&pbuf, p.pass);
+            copySliceTo(eng.prefs.wireless.ssid[0..], p.ssid);
+            if (!c.modulus_wireless_wifi_connect(ssid.ptr, pass.ptr)) {
+                eng.prefs.wireless.wifi_connecting = false;
+                eng.showSnackbarError("Wi-Fi connect failed — C6 / SDIO");
+            } else {
+                eng.prefs.wireless.wifi_connecting = true;
+            }
         },
-        .wifi_disconnect => _ = c.modulus_wireless_wifi_disconnect(),
+        .wifi_connect_saved => {
+            if (!eng.prefs.wireless.wifi) {
+                eng.prefs.wireless.wifi = true;
+                applyWirelessRadios(&eng.prefs);
+            }
+            if (!c.modulus_wireless_wifi_connect_saved()) {
+                eng.prefs.wireless.wifi_connecting = false;
+                eng.showSnackbarError("No saved network");
+            } else {
+                eng.prefs.wireless.wifi_connecting = true;
+            }
+        },
+        .wifi_forget => {
+            c.modulus_wireless_wifi_forget_saved();
+            eng.prefs.wireless.forgetSaved();
+        },
+        .wifi_disconnect => {
+            _ = c.modulus_wireless_wifi_disconnect();
+            eng.prefs.wireless.disconnectWifi();
+            eng.prefs.wireless.wifi_connecting = false;
+        },
         .ble_pair => |p| {
+            if (!eng.prefs.wireless.bt) {
+                eng.prefs.wireless.bt = true;
+                applyWirelessRadios(&eng.prefs);
+            }
             if (p.passkey.len > 0) {
                 var pk: u32 = 0;
                 for (p.passkey) |ch| {
@@ -485,9 +636,18 @@ pub fn wirelessCmd(eng: *Engine, cmd: ui_engine.engine.WirelessUiCmd) void {
             } else {
                 _ = c.modulus_wireless_ble_passkey_confirm();
             }
-            _ = c.modulus_wireless_ble_connect(@intCast(p.idx));
+            if (!c.modulus_wireless_ble_connect(@intCast(p.idx))) {
+                eng.prefs.wireless.bt_connecting = false;
+                eng.showSnackbarError("Bluetooth connect failed — enable radio");
+            } else {
+                eng.prefs.wireless.bt_connecting = true;
+            }
         },
-        .ble_disconnect => c.modulus_wireless_ble_disconnect(),
+        .ble_disconnect => {
+            c.modulus_wireless_ble_disconnect();
+            eng.prefs.wireless.clearBtPaired();
+            eng.prefs.wireless.bt_connecting = false;
+        },
         .ble_clear => c.modulus_wireless_ble_clear_paired(),
         .en_select_scan => |idx| {
             _ = c.modulus_wireless_espnow_select_scan_peer(@intCast(idx));
@@ -507,11 +667,27 @@ pub fn wirelessCmd(eng: *Engine, cmd: ui_engine.engine.WirelessUiCmd) void {
         },
         .en_commit_mac => |mac| {
             var mbuf: [24]u8 = undefined;
-            _ = c.modulus_wireless_espnow_commit_peer_mac(zTerm(&mbuf, mac).ptr, true);
+            _ = c.modulus_wireless_espnow_set_peer_mac(zTerm(&mbuf, mac).ptr);
             syncEspnowSaved(eng);
         },
-        .zb_join => _ = c.modulus_wireless_zigbee_join(),
-        .zb_leave => _ = c.modulus_wireless_zigbee_leave(),
+        .zb_join => {
+            // Radio must be on before HUB_START; Zig UI used to join with radio off.
+            if (!eng.prefs.wireless.zigbee) {
+                eng.prefs.wireless.zigbee = true;
+                applyWirelessRadios(&eng.prefs);
+            }
+            if (!c.modulus_wireless_zigbee_join()) {
+                eng.prefs.wireless.zb_join_pending = false;
+                eng.showSnackbarError("Zigbee join failed — radio / UART");
+            } else {
+                eng.prefs.wireless.zb_join_pending = true;
+            }
+        },
+        .zb_leave => {
+            _ = c.modulus_wireless_zigbee_leave();
+            eng.prefs.wireless.zb_join_pending = false;
+            eng.prefs.wireless.zb_joined = false;
+        },
         .zb_toggle => |idx| _ = c.modulus_wireless_zigbee_device_toggle(@intCast(idx)),
         .zb_identify => |idx| _ = c.modulus_wireless_zigbee_device_identify(@intCast(idx)),
         .zb_remove => |idx| {
@@ -639,7 +815,8 @@ fn copyI2cLine(dst: *settings_prefs.StoragePrefs, which: u8, src: [*:0]const u8)
 }
 
 fn storagePoll(eng: *Engine) void {
-    c.modulus_storage_init();
+    // No storage_init here — installLate() owns it. Calling an init from a 2 s
+    // poll re-read NVS and retried the SD mount on every tick.
     var sd: c.modulus_sd_info_t = undefined;
     c.modulus_storage_get_sd_info(&sd);
     eng.prefs.storage.sd = switch (sd.state) {
@@ -800,17 +977,17 @@ pub fn mirrorBatteryClock(eng: *Engine) void {
         eng.cnc.battery_charge_state = st.charge_state;
         eng.cnc.battery_charging = st.charge_state == 1 or st.charge_state == 2;
         eng.cnc.battery_fast_charge = ui_engine.battery_chrome.isFastCharge(st.charge_state, st.rate_mA);
-        eng.prefs.power.bat_pct = eng.cnc.battery_pct;
-        eng.prefs.power.charge_state = st.charge_state;
-        eng.prefs.power.bat_v = st.voltage;
-        eng.prefs.power.bat_ma = st.current * 1000.0;
-        eng.prefs.power.bat_rate_ma = st.rate_mA;
-        eng.prefs.power.bat_w = st.power;
-        eng.prefs.power.bat_eta_min = if (st.charge_state == 1) st.time_to_full else st.time_to_empty;
-        eng.prefs.power.cpu_temp_c = st.cpu_temp;
-        eng.prefs.power.ina_ok = true;
+        eng.prefs.power_tel.bat_pct = eng.cnc.battery_pct;
+        eng.prefs.power_tel.charge_state = st.charge_state;
+        eng.prefs.power_tel.bat_v = st.voltage;
+        eng.prefs.power_tel.bat_ma = st.current * 1000.0;
+        eng.prefs.power_tel.bat_rate_ma = st.rate_mA;
+        eng.prefs.power_tel.bat_w = st.power;
+        eng.prefs.power_tel.bat_eta_min = if (st.charge_state == 1) st.time_to_full else st.time_to_empty;
+        eng.prefs.power_tel.cpu_temp_c = st.cpu_temp;
+        eng.prefs.power_tel.ina_ok = true;
     } else {
-        eng.prefs.power.ina_ok = false;
+        eng.prefs.power_tel.ina_ok = false;
     }
 
     var tbuf: [16]u8 = undefined;
@@ -883,9 +1060,20 @@ pub fn flushPrefs(eng: *Engine) void {
     savePrefs(&eng.prefs);
     applyWirelessRadios(&eng.prefs);
     applyPowerPolicy(&eng.prefs);
-    c.modulus_audio_set_mic_gain_idx(eng.prefs.audio.mic_gain);
-    c.modulus_rtc_ntp_set_enabled(eng.prefs.system.ntp);
-    c.modulus_rtc_tz_changed(eng.prefs.system.tz_idx);
+    // Same reasoning as applyPowerPolicy: these log and touch hardware, so
+    // only push on a real change.
+    if (g_applied_mic == null or g_applied_mic.? != eng.prefs.audio.mic_gain) {
+        g_applied_mic = eng.prefs.audio.mic_gain;
+        c.modulus_audio_set_mic_gain_idx(eng.prefs.audio.mic_gain);
+    }
+    if (g_applied_ntp == null or g_applied_ntp.? != eng.prefs.system.ntp) {
+        g_applied_ntp = eng.prefs.system.ntp;
+        c.modulus_rtc_ntp_set_enabled(eng.prefs.system.ntp);
+    }
+    if (g_applied_tz == null or g_applied_tz.? != eng.prefs.system.tz_idx) {
+        g_applied_tz = eng.prefs.system.tz_idx;
+        c.modulus_rtc_tz_changed(eng.prefs.system.tz_idx);
+    }
 }
 
 /// Never lose an edit to a power transition.
@@ -893,7 +1081,31 @@ fn flushPendingPrefs() void {
     if (g_eng) |eng| flushPrefs(eng);
 }
 
+/// Last power settings pushed to the HAL.
+///
+/// `PowerPrefs` is now settings-only (live readings live in `PowerTelemetry`),
+/// so comparing the struct directly is sound — it was not while telemetry
+/// shared the struct, because every INA226 sample made it unequal and the gate
+/// silently never held. Keeping the gate matters: `flushPrefs` runs after every
+/// settings edit, and `modulus_power_set_ext5v` kicks an ExtEncoder re-probe
+/// that holds the I2C coex lock for ~815 ms, which the touch read also needs.
+/// Ungated, that dragged the UI from 99 polls/s to 11-40/s.
+var g_applied_power: ?settings_prefs.PowerPrefs = null;
+var g_applied_tz: ?u8 = null;
+var g_applied_mic: ?u8 = null;
+var g_applied_ntp: ?bool = null;
+
+/// Call when something outside prefs may have moved the rails (deep-sleep
+/// wake, power-save gating) so the next flush re-drives them.
+pub fn invalidatePowerCache() void {
+    g_applied_power = null;
+}
+
 fn applyPowerPolicy(p: *const settings_prefs.Prefs) void {
+    if (g_applied_power) |prev| {
+        if (std.meta.eql(prev, p.power)) return;
+    }
+    g_applied_power = p.power;
     c.modulus_power_set_ext5v(p.power.ext5v);
     c.modulus_power_set_usb5v(p.power.usb5v);
     c.modulus_power_set_charge_en(p.power.chg_en);
@@ -967,6 +1179,10 @@ pub fn factoryReset() void {
 }
 
 pub fn transportReinit() void {
+    // Connect/Disconnect/profile must hit NVS before the Core-0 worker reads
+    // `cnc_conn` / `en_mac`. Deferred 400 ms flush left Disconnect's 255 in NVS
+    // so ESP-NOW Connect reinit started nothing → Connecting then Disconnected.
+    flushPendingPrefs();
     device_runtime.transportReinit();
 }
 

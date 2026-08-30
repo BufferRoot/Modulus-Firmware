@@ -49,16 +49,37 @@ bool modulus_ppa_available(void)
     return s_srm != NULL;
 }
 
-/* PPA reads the source through DMA, so CPU writes must be flushed first. Sync
- * whole source rows: a block is only contiguous in memory row-by-row. */
-static bool sync_src_rows(const void *src, uint32_t src_w, uint32_t by, uint32_t bh)
+/* Rows narrower than this are not worth one msync call each — the driver
+ * widens to 64-byte lines anyway, so a short segment saves little while the
+ * per-call overhead multiplies by block height. */
+#define PPA_ROWWISE_MAX_ROWS 192u
+
+/* PPA reads the source through DMA, so CPU writes must be flushed first.
+ *
+ * A block is only contiguous row-by-row, so the cheap path syncs the whole
+ * row span. That flushes the full 1280 px logical row even for a 420 px wide
+ * block (3x the bytes). When the block is narrow and short enough for the
+ * per-call overhead to stay under the saved bandwidth, sync just its columns. */
+static bool sync_src_rows(const void *src, uint32_t src_w,
+                          uint32_t bx, uint32_t by, uint32_t bw, uint32_t bh)
 {
-    void *row0 = (void *)((uintptr_t)src + (size_t)by * src_w * 2u);
-    const size_t span = (size_t)bh * src_w * 2u;
-    /* UNALIGNED lets the driver widen to cache lines itself. Writing back a few
-     * neighbouring bytes is harmless — they are our own framebuffer. */
-    esp_err_t err = esp_cache_msync(row0, span,
-                                    ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+    const uintptr_t base = (uintptr_t)src + (size_t)by * src_w * 2u;
+    const int flags = ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED;
+    esp_err_t err;
+
+    if (bw * 2u <= src_w && bh <= PPA_ROWWISE_MAX_ROWS) {
+        for (uint32_t r = 0; r < bh; r++) {
+            void *row = (void *)(base + (size_t)r * src_w * 2u + (size_t)bx * 2u);
+            err = esp_cache_msync(row, (size_t)bw * 2u, flags);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "msync row %u failed: %s", (unsigned)r, esp_err_to_name(err));
+                return false;
+            }
+        }
+        return true;
+    }
+
+    err = esp_cache_msync((void *)base, (size_t)bh * src_w * 2u, flags);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "msync failed: %s", esp_err_to_name(err));
         return false;
@@ -97,7 +118,7 @@ bool modulus_ppa_rotate_block(const void *src, void *dst, uint32_t dst_bytes,
         return false;
     }
 
-    if (!sync_src_rows(src, src_w, by, bh)) {
+    if (!sync_src_rows(src, src_w, bx, by, bw, bh)) {
         return false;
     }
 

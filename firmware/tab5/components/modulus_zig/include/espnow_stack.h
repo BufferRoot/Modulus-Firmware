@@ -24,8 +24,17 @@ bool modulus_espnow_stack_set_rate(const uint8_t mac[6], uint8_t rate_idx);
 /** Unicast/broadcast send via C6 (waits for SEND_OK/FAIL). */
 bool modulus_espnow_stack_send(const uint8_t mac[6], const uint8_t *data, size_t len);
 
+/** Discovery/locate: no TX cooldown, no session teardown, single SDIO attempt. */
+bool modulus_espnow_stack_send_discovery(const uint8_t mac[6], const uint8_t *data, size_t len);
+
 /** Discovery: bcast peer + MOD_PROBE (matches reference hal_wireless scan). */
 bool modulus_espnow_stack_probe(uint8_t channel);
+
+/** C6 emits lightweight DISCOVER events instead of full RECV during scan. */
+bool modulus_espnow_stack_scan_begin(uint16_t duration_ms);
+void modulus_espnow_stack_scan_end(void);
+/** True when C6 INIT_OK reported SCAN_BEGIN/END support (old slaves: probe-only). */
+bool modulus_espnow_stack_scan_supported(void);
 
 /** Wait for C6 ESPNOW_EVT_INIT_OK after init (polls s_inited). */
 bool modulus_espnow_stack_wait_inited(uint32_t timeout_ms);
@@ -43,8 +52,11 @@ void modulus_espnow_stack_set_evt_hook(modulus_espnow_stack_evt_fn fn, void *ctx
 /** Re-apply bridge peer after NVS/channel change while transport open. */
 void modulus_espnow_transport_reapply_peer(void);
 
-/** C6: reassert WiFi channel + PS_NONE (compat; Zigbee/Thread no longer on C6). */
-bool modulus_espnow_stack_lock_channel(void);
+/** C6: lock Wi-Fi PHY to channel (1-13); 0 = reassert NVS/current. */
+bool modulus_espnow_stack_lock_channel(uint8_t channel);
 
 /** Bridge link RSSI in dBm from throttled C6 telemetry (false = none yet). */
 bool modulus_espnow_stack_bridge_rssi(int8_t *out_dbm);
+
+/** Last SEND_FAIL reason byte from C6 (0x01 = ACK miss / peer dark). */
+uint8_t modulus_espnow_stack_last_send_fail_reason(void);

@@ -78,11 +78,19 @@ fn ppaRotate(
 
 const ui_sound_tick: u8 = 0;
 
+const log_ui = std.log.scoped(.ui_rt);
+
 const PsramAllocator = struct {
     fn alloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
         const bytes = @max(alignment.toByteUnits(), @sizeOf(usize));
-        const p = heap_caps_aligned_alloc(bytes, len, cap_spiram | cap_8bit) orelse
-            heap_caps_aligned_alloc(bytes, len, cap_8bit) orelse return null;
+        const p = heap_caps_aligned_alloc(bytes, len, cap_spiram | cap_8bit) orelse blk: {
+            // Falling back to internal RAM for an Engine-sized allocation is a
+            // big deal on a part with ~185 KB internal free — say so loudly
+            // rather than letting it surface later as a mystery OOM.
+            const q = heap_caps_aligned_alloc(bytes, len, cap_8bit) orelse return null;
+            log_ui.warn("PSRAM alloc failed for {d} B — fell back to internal RAM", .{len});
+            break :blk q;
+        };
         return @ptrCast(p);
     }
 
@@ -106,8 +114,10 @@ const PsramAllocator = struct {
     };
 };
 
+/// The vtable ignores `ptr`, but leaving it `undefined` puts an indeterminate
+/// value in a struct that gets copied around. Point it at the vtable itself.
 const psram_allocator: std.mem.Allocator = .{
-    .ptr = undefined,
+    .ptr = @constCast(@ptrCast(&PsramAllocator.vtable)),
     .vtable = &PsramAllocator.vtable,
 };
 
@@ -291,6 +301,9 @@ fn stateName(st: u8) []const u8 {
 /// LVGL `modulus_ui_status_bar_update` + overrides — machine-reported fields win.
 fn mirrorCncStatus(eng: *Engine) void {
     if (!device_runtime.isBootOk()) return;
+    // Load-bearing, do not "optimise" away: modulus_cnc_status_t has ~30
+    // fields and device_runtime.fillCncStatus assigns 21. Without the zeroing
+    // the remaining 9 would be stack garbage. ~400 B of memset at 33 Hz.
     var st: CncStatus = std.mem.zeroes(CncStatus);
     device_runtime.fillCncStatus(&st);
 
@@ -397,8 +410,8 @@ export fn modulus_zig_ui_boot() c_int {
     eng.cnc.job_progress_vis = 0;
     // Drop host stub SoC (78%) before first paint — INA mirror fills next.
     eng.cnc.battery_pct = 0;
-    eng.prefs.power.bat_pct = 0;
-    eng.prefs.power.ina_ok = false;
+    eng.prefs.power_tel.bat_pct = 0;
+    eng.prefs.power_tel.ina_ok = false;
     eng.cnc.connected = false;
     eng.cnc.session = 0;
     eng.cnc.job_name = "";
@@ -477,4 +490,19 @@ export fn modulus_zig_ui_frame() void {
 
 export fn modulus_zig_ui_is_ready() c_int {
     return if (g_eng != null) @as(c_int, 1) else 0;
+}
+
+/// Dirty-set cap overflows since boot. Each one collapses the damage list to a
+/// single AABB — usually the full frame — so a rising count means `dirty_cap`
+/// is too small for the busiest screen. Surfaced in the zig_ui health line.
+export fn modulus_zig_dirty_merge_all_count() u32 {
+    return ui_engine.geom.merge_all_events;
+}
+
+/// Pixels rotated on the last painted frame. `flush_last_px` cannot be used for
+/// this: flush_flip overwrites it with the whole panel on every flip, so it
+/// always read 921600 regardless of how little actually changed.
+export fn modulus_zig_last_dirty_px() u32 {
+    const eng = g_eng orelse return 0;
+    return eng.metrics.rotate_px;
 }

@@ -18,6 +18,7 @@
 #include <esp_vfs_fat.h>
 #include <lvgl.h>
 #include <usb/usb_host.h>
+#include "tab5_pi4ioe.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +40,71 @@ static int s_usb_dev_count = 0;
 static char s_usb_status[32] = "VBUS off";
 static int64_t s_usb_last_poll_us = 0;
 
+static TaskHandle_t s_usb_lib_task;
+
+/* Mirror of the BSP's usb_lib_task — we cannot use bsp_usb_host_start(), see
+ * usb_host_start_safe(). */
+static void usb_lib_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        uint32_t event_flags = 0;
+        usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
+        if (event_flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) {
+            (void)usb_host_device_free_all();
+        }
+    }
+}
+
+/* bsp_usb_host_start() = bsp_feature_enable(BSP_FEATURE_USB) + usb_host_install()
+ * + task. We deliberately skip the feature_enable step.
+ *
+ * BSP_USB_EN is the same PI4IOE pin as our usb5v rail (E2.P3), which
+ * tab5_pi4ioe already drives. esp_io_expander does read-modify-write against
+ * its OWN cached register image, and that cache is stale because we write the
+ * chip directly — so its set_dir/set_output_mode pass knocks WLAN_PWR_EN
+ * (E2.P0) to High-Z. The C6 browns out and esp_hosted dies ~14 ms later:
+ *
+ *   I (18656) Installing USB Host
+ *   E (18670) sdmmc_io: sdmmc_send_cmd returned 0x107
+ *   E (18685) H_SDIO_DRV: Unrecoverable host sdio state
+ *
+ * Re-driving the rail afterwards does NOT help — verified on device; a
+ * momentary High-Z already reset the C6. The clobber must not happen at all.
+ * VBUS is already on from modulus_power_apply_rails(), so the host stack just
+ * needs installing. */
+static esp_err_t usb_host_start_safe(void)
+{
+    if (!tab5_pi4ioe_ensure_wlan_pwr_on()) {
+        ESP_LOGW(TAG, "WLAN_PWR not healthy before USB host install");
+    }
+
+    const usb_host_config_t host_config = {
+        .skip_phy_setup = false,
+        .intr_flags = ESP_INTR_FLAG_LOWMED,
+    };
+    esp_err_t err = usb_host_install(&host_config);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (xTaskCreate(usb_lib_task, "usb_lib", 4096, NULL, 10, &s_usb_lib_task) != pdPASS) {
+        ESP_LOGE(TAG, "usb_lib task create failed");
+        (void)usb_host_uninstall();
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t usb_host_stop_safe(void)
+{
+    const esp_err_t err = usb_host_uninstall();
+    if (s_usb_lib_task) {
+        vTaskDelete(s_usb_lib_task);
+        s_usb_lib_task = NULL;
+    }
+    return err;
+}
+
 static void usb_host_ensure(void)
 {
     /* Defer until Zig boot finishes battery_init — BSP USB enable hits PI4IOE
@@ -53,7 +119,7 @@ static void usb_host_ensure(void)
     if (!vbus) {
         if (s_usb_started) {
             if (modulus_i2c_coex_lock(5000)) {
-                const esp_err_t stop = bsp_usb_host_stop();
+                const esp_err_t stop = usb_host_stop_safe();
                 modulus_i2c_coex_unlock();
                 if (stop != ESP_OK) {
                     ESP_LOGW(TAG, "USB host stop: %s", esp_err_to_name(stop));
@@ -76,7 +142,7 @@ static void usb_host_ensure(void)
             snprintf(s_usb_status, sizeof(s_usb_status), "I2C busy");
             return;
         }
-        const esp_err_t start = bsp_usb_host_start(BSP_USB_HOST_POWER_MODE_USB_DEV, true);
+        const esp_err_t start = usb_host_start_safe();
         modulus_i2c_coex_unlock();
         if (start == ESP_OK || start == ESP_ERR_INVALID_STATE) {
             s_usb_started = true;
@@ -109,6 +175,16 @@ static void usb_host_ensure(void)
 
 void modulus_storage_init(void)
 {
+    /* Idempotent. device_ui_bridge.storagePoll() calls this on every ~2 s
+     * Storage refresh, which re-read NVS, re-ran esp_log_level_set, retried the
+     * SD mount and printed three lines — forever. It is an init, so run once.
+     * Use modulus_storage_mount() for an explicit remount. */
+    static bool s_inited = false;
+    if (s_inited) {
+        return;
+    }
+    s_inited = true;
+
     /* Restore log level from NVS (matches Storage tab + C++ hal_system::init). */
     {
         uint8_t lvl = modulus_nvs_get_u8("loglvl", 2);
@@ -534,11 +610,14 @@ bool modulus_storage_import_settings(const char *path, bool include_secrets)
 
 void modulus_storage_clear_ui_cache(void)
 {
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
     lv_obj_t *scr = lv_screen_active();
     if (scr) {
         lv_obj_invalidate(scr);
     }
     /* Let LVGL refr timer flush — lv_refr_now pins taskLVGL on 1280x720 sw_rotate. */
+#endif
+    /* Zig UI: the engine repaints from its own dirty set; nothing to invalidate. */
     ESP_LOGI(TAG, "UI cache cleared");
 }
 

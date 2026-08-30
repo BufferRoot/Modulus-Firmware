@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
+#include "freertos/task.h"
 #include "transport_drv.h"
 
 #include <assert.h>
@@ -40,6 +41,20 @@ static bool s_inited;
 static modulus_c6_sdio_health_t s_health;
 static tx_slot_t s_tx_pool[TX_POOL_N];
 static portMUX_TYPE s_tx_mux = portMUX_INITIALIZER_UNLOCKED;
+static TickType_t s_quiesce_until;
+
+void modulus_c6_sdio_quiesce(uint32_t ms)
+{
+    s_quiesce_until = xTaskGetTickCount() + pdMS_TO_TICKS(ms);
+}
+
+static bool sdio_tx_allowed(void)
+{
+    if (s_quiesce_until != 0 && xTaskGetTickCount() < s_quiesce_until) {
+        return false;
+    }
+    return is_transport_tx_ready() != 0;
+}
 
 static void tx_pool_free(void *p)
 {
@@ -75,7 +90,7 @@ static uint8_t *tx_pool_alloc(uint16_t len)
 
 bool modulus_c6_sdio_ready(void)
 {
-    return is_transport_tx_ready() != 0;
+    return sdio_tx_allowed();
 }
 
 void modulus_c6_sdio_register_rx(uint8_t if_type, modulus_c6_rx_fn fn, void *ctx)
@@ -120,6 +135,7 @@ bool modulus_c6_sdio_send(uint8_t if_type, const uint8_t *payload, uint16_t len)
     if (rc != ESP_OK) {
         ESP_LOGW(TAG, "esp_hosted_tx if=%u: %d", (unsigned)if_type, rc);
         tx_pool_free(buf);
+        modulus_c6_sdio_quiesce(30000);
         return false;
     }
     return true;

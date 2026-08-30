@@ -753,6 +753,8 @@ pub const WirelessPrefs = struct {
     en_adv_exp: bool = false,
     /// Live stubs (host).
     wifi_conn: bool = false,
+    wifi_connecting: bool = false,
+    bt_connecting: bool = false,
     ssid: [24]u8 = .{0} ** 24,
     /// Draft password for Wi-Fi connect modal (host stub; not persisted).
     draft_pass: [32]u8 = .{0} ** 32,
@@ -764,6 +766,8 @@ pub const WirelessPrefs = struct {
     ip: [16]u8 = padStr("--", 16),
     scan_phase: u8 = 0, // 0 idle 1 scanning 2 done
     scan_n: u8 = 0,
+    /// Device: last empty scan failed because C6/SDIO was down.
+    scan_c6_down: bool = false,
     /// Device: Wi-Fi scan owned by C6 poll — skip host 1 Hz stub completion.
     wifi_scan_hw: bool = false,
     has_saved: bool = false,
@@ -781,7 +785,11 @@ pub const WirelessPrefs = struct {
     en_rx: u32 = 0,
     en_tx: u32 = 0,
     zb_joined: bool = false,
+    /// Async NanoH2 HUB_START in flight (device poll); UI shows Joining...
+    zb_join_pending: bool = false,
     th_attached: bool = false,
+    /// False when C6 OpenThread is disabled in the flashed image.
+    thread_supported: bool = true,
     zb_scan_phase: u8 = 0,
     zb_scan_n: u8 = 0,
     th_scan_phase: u8 = 0,
@@ -819,6 +827,9 @@ pub const WirelessPrefs = struct {
     /// Device: live NanoH2 status / network lines from wireless shim.
     zb_status: [48]u8 = .{0} ** 48,
     zb_network: [40]u8 = .{0} ** 40,
+    /// Device: live Wi-Fi / BLE status from C6 shim.
+    wifi_status: [48]u8 = .{0} ** 48,
+    bt_status: [48]u8 = .{0} ** 48,
 
     pub const rate_labels = [_][]const u8{ "1M", "2M", "5.5M", "11M" };
     pub const chan_labels = [_][]const u8{ "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13" };
@@ -880,6 +891,7 @@ pub const WirelessPrefs = struct {
     pub fn zbStatusSlice(self: *const WirelessPrefs) []const u8 {
         const s = cstrSlice(&self.zb_status);
         if (s.len > 0) return s;
+        if (self.zb_join_pending and !self.zb_joined) return "Joining hub...";
         if (!self.zigbee) return "Off";
         if (self.zb_joined) return "Joined (hub)";
         return "On (not joined)";
@@ -968,14 +980,31 @@ pub const WirelessPrefs = struct {
         return if (on) "On" else "";
     }
     pub fn wifiRadioText(self: WirelessPrefs) []const u8 {
+        const s = cstrSlice(&self.wifi_status);
+        if (s.len > 0) return s;
         if (!self.wifi) return "Off";
         if (self.wifi_conn) return "Connected";
+        if (self.wifi_connecting) return "Connecting...";
         return "On (idle)";
+    }
+    pub fn wifiStatusSlice(self: WirelessPrefs) []const u8 {
+        return self.wifiRadioText();
+    }
+    pub fn btStatusSlice(self: WirelessPrefs) []const u8 {
+        const s = cstrSlice(&self.bt_status);
+        if (s.len > 0) return s;
+        if (!self.bt) return "Off";
+        if (self.bt_conn) return "Connected";
+        if (self.bt_connecting) return "Connecting...";
+        return "Ready";
     }
     pub fn scanText(self: WirelessPrefs) []const u8 {
         return switch (self.scan_phase) {
             1 => "Scanning...",
-            2 => if (self.scan_n == 0) "No networks" else "Done",
+            2 => if (self.scan_n == 0)
+                (if (self.scan_c6_down) "C6 offline" else "No networks")
+            else
+                "Done",
             else => "Idle",
         };
     }
@@ -1003,6 +1032,7 @@ pub const WirelessPrefs = struct {
         if (!self.wifi) return;
         self.scan_phase = 1;
         self.scan_n = 0;
+        self.scan_c6_down = false;
         self.wifi_scan_hw = false;
         self.live_ap_n = 0;
     }
@@ -1055,6 +1085,7 @@ pub const WirelessPrefs = struct {
     }
     pub fn disconnectWifi(self: *WirelessPrefs) void {
         self.wifi_conn = false;
+        self.wifi_connecting = false;
         @memset(&self.ssid, 0);
         @memset(&self.ip, 0);
         const dash = "--";
@@ -1094,6 +1125,7 @@ pub const WirelessPrefs = struct {
     }
     pub fn clearBtPaired(self: *WirelessPrefs) void {
         self.bt_conn = false;
+        self.bt_connecting = false;
         @memset(&self.bt_name, 0);
     }
     pub fn setBridgePeer(self: *WirelessPrefs, idx: u8) void {
@@ -1114,6 +1146,29 @@ pub const WirelessPrefs = struct {
         }
     }
     pub fn removeSavedPeer(self: *WirelessPrefs, idx: u8) void {
+        if (self.live_en_saved_n > 0) {
+            if (idx >= self.live_en_saved_n) return;
+            var i: u8 = idx;
+            while (i + 1 < self.live_en_saved_n) : (i += 1) {
+                self.live_en_saved[i] = self.live_en_saved[i + 1];
+            }
+            @memset(&self.live_en_saved[self.live_en_saved_n - 1], 0);
+            self.live_en_saved_n -= 1;
+            self.en_saved_mask = 0;
+            var m: u8 = 0;
+            while (m < self.live_en_saved_n and m < 8) : (m += 1) {
+                self.en_saved_mask |= @as(u8, 1) << @intCast(m);
+            }
+            if (self.en_active == idx) {
+                self.en_active = 255;
+                @memset(&self.en_bridge, 0);
+                const none = "None";
+                @memcpy(self.en_bridge[0..none.len], none);
+            } else if (self.en_active != 255 and self.en_active > idx) {
+                self.en_active -= 1;
+            }
+            return;
+        }
         const i = @min(idx, stub_peers.len - 1);
         self.en_saved_mask &= ~(@as(u8, 1) << @intCast(i));
         if (self.en_active == i) {
@@ -1128,6 +1183,8 @@ pub const WirelessPrefs = struct {
         self.en_active = 255;
         self.en_peer_n = 0;
         self.en_scan_phase = 0;
+        self.live_en_saved_n = 0;
+        for (&self.live_en_saved) |*slot| @memset(slot, 0);
         @memset(&self.en_bridge, 0);
         const none = "None";
         @memcpy(self.en_bridge[0..none.len], none);
@@ -1160,6 +1217,7 @@ pub const WirelessPrefs = struct {
     }
     pub fn leaveZigbee(self: *WirelessPrefs) void {
         self.zb_joined = false;
+        self.zb_join_pending = false;
         self.zb_dev_n = 0;
         self.live_zb_n = 0;
         self.zb_scan_phase = 0;
@@ -1219,7 +1277,15 @@ pub const WirelessPrefs = struct {
     }
 };
 
-pub const PowerPrefs = struct {
+/// Live battery / thermal readings. Deliberately NOT part of `PowerPrefs`.
+///
+/// These used to sit alongside the persisted power settings, which meant any
+/// `std.meta.eql` change-gate over `PowerPrefs` compared telemetry too — every
+/// INA226 sample made it unequal, so the gate silently never held and
+/// `flushPrefs` re-drove all 14 power setters (an ~815 ms ExtEncoder re-probe
+/// holding the I2C coex lock) after every settings edit. None of these are
+/// persisted to NVS; they are refreshed from the HAL each poll.
+pub const PowerTelemetry = struct {
     bat_pct: u8 = 0,
     /// 0=Discharging 1=Charging 2=Full 3=No battery
     charge_state: u8 = 0,
@@ -1231,6 +1297,90 @@ pub const PowerPrefs = struct {
     bat_eta_min: i32 = -1,
     cpu_temp_c: f32 = 0,
     ina_ok: bool = false,
+
+    pub fn chargeStateLabel(self: PowerTelemetry) []const u8 {
+        return switch (self.charge_state) {
+            1 => "Charging",
+            2 => "Full",
+            3 => "No battery",
+            else => "Discharging",
+        };
+    }
+    pub fn formatPct(self: PowerTelemetry, buf: []u8) []const u8 {
+        if (self.charge_state == 3) return "N/A";
+        return std.fmt.bufPrint(buf, "{d}%", .{self.bat_pct}) catch "?%";
+    }
+    pub fn formatVolt(self: PowerTelemetry, buf: []u8) []const u8 {
+        return std.fmt.bufPrint(buf, "{d:.2} V", .{self.bat_v}) catch "? V";
+    }
+    pub fn formatCurr(self: PowerTelemetry, buf: []u8) []const u8 {
+        return std.fmt.bufPrint(buf, "{d:.0} mA", .{self.bat_ma}) catch "? mA";
+    }
+    pub fn formatPower(self: PowerTelemetry, buf: []u8) []const u8 {
+        return std.fmt.bufPrint(buf, "{d:.2} W", .{self.bat_w}) catch "? W";
+    }
+    pub fn formatRate(self: PowerTelemetry, buf: []u8) []const u8 {
+        return switch (self.charge_state) {
+            1 => std.fmt.bufPrint(buf, "{d:.0} mA (charging)", .{self.bat_rate_ma}) catch "--",
+            0 => std.fmt.bufPrint(buf, "{d:.0} mA (discharging)", .{self.bat_rate_ma}) catch "--",
+            else => "--",
+        };
+    }
+    pub fn formatEta(self: PowerTelemetry, buf: []u8) []const u8 {
+        if (self.charge_state == 3 or self.bat_eta_min < 0) return "--";
+        const mins: u32 = @intCast(self.bat_eta_min);
+        const h = mins / 60;
+        const m = mins % 60;
+        const suffix: []const u8 = if (self.charge_state == 1) " to full" else " left";
+        if (h > 0) return std.fmt.bufPrint(buf, "~{d}h {d}m{s}", .{ h, m, suffix }) catch "--";
+        return std.fmt.bufPrint(buf, "~{d}m{s}", .{ m, suffix }) catch "--";
+    }
+    pub fn formatTemp(self: PowerTelemetry, buf: []u8) []const u8 {
+        return std.fmt.bufPrint(buf, "{d:.1} C", .{self.cpu_temp_c}) catch "? C";
+    }
+    /// Soft INA226 stub — host only (device never calls; `now_us_sink` path).
+    pub fn tickTelemetry(self: *PowerTelemetry) void {
+        if (!self.ina_ok) {
+            self.ina_ok = true;
+            self.bat_pct = 78;
+            self.bat_v = 7.82;
+            self.bat_ma = -320;
+            self.bat_w = 2.50;
+            self.bat_rate_ma = 320;
+            self.bat_eta_min = 95;
+            self.cpu_temp_c = 42.0;
+            self.charge_state = 0;
+        }
+        self.cpu_temp_c += if (@mod(self.bat_pct, 2) == 0) @as(f32, 0.05) else -0.05;
+        if (self.charge_state == 1) {
+            self.bat_ma = 480;
+            self.bat_rate_ma = 480;
+            self.bat_w = self.bat_v * self.bat_ma / 1000.0;
+            if (self.bat_pct < 100) self.bat_pct += 1;
+            if (self.bat_pct >= 100) {
+                self.bat_pct = 100;
+                self.charge_state = 2;
+            }
+            self.bat_eta_min = @max(0, @as(i32, @as(i32, self.bat_pct) * -3 + 300));
+            self.bat_v = @min(8.40, self.bat_v + 0.01);
+        } else if (self.charge_state == 0) {
+            self.bat_ma = -280 - @as(f32, @floatFromInt(self.bat_pct % 40));
+            self.bat_rate_ma = -self.bat_ma;
+            self.bat_w = self.bat_v * (-self.bat_ma) / 1000.0;
+            if (self.bat_pct > 5) self.bat_pct -= 1;
+            self.bat_eta_min = @max(0, @as(i32, self.bat_pct) * 4);
+            self.bat_v = @max(6.10, self.bat_v - 0.005);
+        } else if (self.charge_state == 2) {
+            self.bat_ma = 0;
+            self.bat_rate_ma = 0;
+            self.bat_w = 0;
+            self.bat_eta_min = -1;
+        }
+    }
+};
+
+/// Persisted power settings only — safe to compare field-wise for change gating.
+pub const PowerPrefs = struct {
     ext5v: bool = true,
     usb5v: bool = true,
     dim_idx: u8 = 0,
@@ -1351,85 +1501,6 @@ pub const PowerPrefs = struct {
     }
     pub fn warnLabel(self: PowerPrefs) []const u8 {
         return warn_labels[@min(self.bat_warn_idx, warn_labels.len - 1)];
-    }
-    pub fn chargeStateLabel(self: PowerPrefs) []const u8 {
-        return switch (self.charge_state) {
-            1 => "Charging",
-            2 => "Full",
-            3 => "No battery",
-            else => "Discharging",
-        };
-    }
-    pub fn formatPct(self: PowerPrefs, buf: []u8) []const u8 {
-        if (self.charge_state == 3) return "N/A";
-        return std.fmt.bufPrint(buf, "{d}%", .{self.bat_pct}) catch "?%";
-    }
-    pub fn formatVolt(self: PowerPrefs, buf: []u8) []const u8 {
-        return std.fmt.bufPrint(buf, "{d:.2} V", .{self.bat_v}) catch "? V";
-    }
-    pub fn formatCurr(self: PowerPrefs, buf: []u8) []const u8 {
-        return std.fmt.bufPrint(buf, "{d:.0} mA", .{self.bat_ma}) catch "? mA";
-    }
-    pub fn formatPower(self: PowerPrefs, buf: []u8) []const u8 {
-        return std.fmt.bufPrint(buf, "{d:.2} W", .{self.bat_w}) catch "? W";
-    }
-    pub fn formatRate(self: PowerPrefs, buf: []u8) []const u8 {
-        return switch (self.charge_state) {
-            1 => std.fmt.bufPrint(buf, "{d:.0} mA (charging)", .{self.bat_rate_ma}) catch "--",
-            0 => std.fmt.bufPrint(buf, "{d:.0} mA (discharging)", .{self.bat_rate_ma}) catch "--",
-            else => "--",
-        };
-    }
-    pub fn formatEta(self: PowerPrefs, buf: []u8) []const u8 {
-        if (self.charge_state == 3 or self.bat_eta_min < 0) return "--";
-        const mins: u32 = @intCast(self.bat_eta_min);
-        const h = mins / 60;
-        const m = mins % 60;
-        const suffix: []const u8 = if (self.charge_state == 1) " to full" else " left";
-        if (h > 0) return std.fmt.bufPrint(buf, "~{d}h {d}m{s}", .{ h, m, suffix }) catch "--";
-        return std.fmt.bufPrint(buf, "~{d}m{s}", .{ m, suffix }) catch "--";
-    }
-    pub fn formatTemp(self: PowerPrefs, buf: []u8) []const u8 {
-        return std.fmt.bufPrint(buf, "{d:.1} C", .{self.cpu_temp_c}) catch "? C";
-    }
-    /// Soft INA226 stub — host only (device never calls; `now_us_sink` path).
-    pub fn tickTelemetry(self: *PowerPrefs) void {
-        if (!self.ina_ok) {
-            self.ina_ok = true;
-            self.bat_pct = 78;
-            self.bat_v = 7.82;
-            self.bat_ma = -320;
-            self.bat_w = 2.50;
-            self.bat_rate_ma = 320;
-            self.bat_eta_min = 95;
-            self.cpu_temp_c = 42.0;
-            self.charge_state = 0;
-        }
-        self.cpu_temp_c += if (@mod(self.bat_pct, 2) == 0) @as(f32, 0.05) else -0.05;
-        if (self.charge_state == 1) {
-            self.bat_ma = 480;
-            self.bat_rate_ma = 480;
-            self.bat_w = self.bat_v * self.bat_ma / 1000.0;
-            if (self.bat_pct < 100) self.bat_pct += 1;
-            if (self.bat_pct >= 100) {
-                self.bat_pct = 100;
-                self.charge_state = 2;
-            }
-            self.bat_eta_min = @max(0, @as(i32, @as(i32, self.bat_pct) * -3 + 300));
-            self.bat_v = @min(8.40, self.bat_v + 0.01);
-        } else if (self.charge_state == 0) {
-            self.bat_ma = -280 - @as(f32, @floatFromInt(self.bat_pct % 40));
-            self.bat_rate_ma = -self.bat_ma;
-            self.bat_w = self.bat_v * (-self.bat_ma) / 1000.0;
-            if (self.bat_pct > 5) self.bat_pct -= 1;
-            self.bat_eta_min = @max(0, @as(i32, self.bat_pct) * 4);
-            self.bat_v = @max(6.10, self.bat_v - 0.005);
-        } else if (self.charge_state == 2) {
-            self.bat_ma = 0;
-            self.bat_rate_ma = 0;
-            self.bat_w = 0;
-            self.bat_eta_min = -1;
-        }
     }
     pub fn resetDefaults(self: *PowerPrefs) void {
         self.* = .{};
@@ -2064,6 +2135,8 @@ pub const Prefs = struct {
     audio: AudioPrefs = .{},
     wireless: WirelessPrefs = .{},
     power: PowerPrefs = .{},
+    /// Live readings, not persisted — see PowerTelemetry.
+    power_tel: PowerTelemetry = .{},
     security: SecurityPrefs = .{},
     machine: MachinePrefs = .{},
     storage: StoragePrefs = .{},
@@ -2099,10 +2172,10 @@ pub const Prefs = struct {
         }
         cnc.lefty = self.display.lefty;
         cnc.conn = self.cnc.conn;
-        cnc.battery_pct = self.power.bat_pct;
-        cnc.battery_charge_state = self.power.charge_state;
-        cnc.battery_charging = self.power.charge_state == 1 or self.power.charge_state == 2;
-        cnc.battery_fast_charge = battery_chrome.isFastCharge(self.power.charge_state, @abs(self.power.bat_ma));
+        cnc.battery_pct = self.power_tel.bat_pct;
+        cnc.battery_charge_state = self.power_tel.charge_state;
+        cnc.battery_charging = self.power_tel.charge_state == 1 or self.power_tel.charge_state == 2;
+        cnc.battery_fast_charge = battery_chrome.isFastCharge(self.power_tel.charge_state, @abs(self.power_tel.bat_ma));
         cnc.wifi_on = self.wireless.wifi;
         cnc.bt_on = self.wireless.bt;
         cnc.espnow_on = self.wireless.espnow;
@@ -2128,12 +2201,12 @@ pub const Prefs = struct {
         if (n > 0) @memcpy(self.cnc.espnow_mac[0..n], mac[0..n]);
     }
 
-    /// NVS write source: live bridge first, else CNC field (skip "None").
+    /// NVS write source: live bridge first, else CNC field (skip "None" / broadcast).
     pub fn espnowMacForNvs(self: *const Prefs) []const u8 {
         const b = self.wireless.bridgeSlice();
-        if (b.len > 0 and !std.mem.eql(u8, b, "None")) return b;
+        if (b.len > 0 and !std.mem.eql(u8, b, "None") and !std.mem.eql(u8, b, "FF:FF:FF:FF:FF:FF")) return b;
         const m = self.cnc.espnowMacSlice();
-        if (m.len > 0 and !std.mem.eql(u8, m, "None")) return m;
+        if (m.len > 0 and !std.mem.eql(u8, m, "None") and !std.mem.eql(u8, m, "FF:FF:FF:FF:FF:FF")) return m;
         return "";
     }
 };

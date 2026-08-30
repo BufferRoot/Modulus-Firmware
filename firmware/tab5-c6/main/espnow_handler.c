@@ -36,6 +36,8 @@ static bool s_inited = false;
 static uint8_t s_radio_ch = 1;
 static uint8_t s_rate_idx = ESPNOW_DEFAULT_RATE_IDX;
 static uint16_t s_max_payload = ESP_NOW_MAX_DATA_LEN;
+static bool s_discover_mode;
+static TickType_t s_discover_until;
 
 static uint8_t s_pool[ESPNOW_POOL_N][ESPNOW_POOL_BYTES];
 static uint8_t s_pool_busy;
@@ -206,15 +208,34 @@ static void espnow_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status
         send_evt_to_host(ESPNOW_EVT_SEND_OK, mac_addr, 6);
         return;
     }
-    uint8_t fail[7];
+    /* A no-ACK is either "peer absent" or "peer on another channel", and the
+     * host cannot tell them apart without the radio/peer channel pair. */
+    uint8_t fail[10] = {};
     memcpy(fail, mac_addr, 6);
     fail[6] = (uint8_t)status;
+    uint8_t primary = 0;
+    wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+    if (esp_wifi_get_channel(&primary, &second) != ESP_OK) {
+        primary = 0;
+    }
+    fail[7] = primary;
+    esp_now_peer_info_t peer = {};
+    fail[8] = (esp_now_get_peer(mac_addr, &peer) == ESP_OK) ? peer.channel : 0;
     send_evt_to_host(ESPNOW_EVT_SEND_FAIL, fail, sizeof(fail));
 }
 
 static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int len)
 {
     if (!info || !data || len <= 0 || (uint16_t)len > s_max_payload) {
+        return;
+    }
+
+    const bool discover = s_discover_mode && xTaskGetTickCount() < s_discover_until;
+    if (discover) {
+        uint8_t ev[7];
+        memcpy(ev, info->src_addr, 6);
+        ev[6] = info->rx_ctrl ? (uint8_t)(int8_t)info->rx_ctrl->rssi : 0;
+        send_evt_to_host(ESPNOW_EVT_DISCOVER, ev, sizeof(ev));
         return;
     }
 
@@ -259,10 +280,16 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
     }
 }
 
-static void cmd_init(void)
+static void cmd_init(const uint8_t *payload, uint16_t len)
 {
+    if (len >= 1 && payload && payload[0] >= 1 && payload[0] <= 13) {
+        s_radio_ch = payload[0];
+    }
+
     if (s_inited) {
-        send_evt_to_host(ESPNOW_EVT_INIT_OK, NULL, 0);
+        (void)espnow_lock_radio_channel(s_radio_ch);
+        const uint8_t caps = ESPNOW_PROTO_CAP_SCAN;
+        send_evt_to_host(ESPNOW_EVT_INIT_OK, &caps, 1);
         return;
     }
 
@@ -303,7 +330,10 @@ static void cmd_init(void)
     ESP_LOGI(TAG, "ESP-NOW ready ch%u max=%u rate_idx=%u tx=%d",
              (unsigned)s_radio_ch, (unsigned)s_max_payload, (unsigned)s_rate_idx,
              ESPNOW_TX_POWER_QUARTER_DBM);
-    send_evt_to_host(ESPNOW_EVT_INIT_OK, NULL, 0);
+    {
+        const uint8_t caps = ESPNOW_PROTO_CAP_SCAN;
+        send_evt_to_host(ESPNOW_EVT_INIT_OK, &caps, 1);
+    }
 }
 
 static void cmd_deinit(void)
@@ -323,6 +353,17 @@ static void cmd_add_peer(const uint8_t *payload, uint16_t len)
 
     uint8_t peer_ch = (payload[6] >= 1 && payload[6] <= 13) ? payload[6] : s_radio_ch;
     (void)espnow_lock_radio_channel(peer_ch);
+
+    if (esp_now_is_peer_exist(payload)) {
+        const bool want_encrypt = (len >= 8 && payload[7] != 0);
+        esp_now_peer_info_t existing = {0};
+        if (esp_now_get_peer(payload, &existing) == ESP_OK &&
+            existing.channel == peer_ch && existing.encrypt == want_encrypt) {
+            (void)espnow_apply_peer_rate(payload, s_rate_idx);
+            send_evt_to_host(ESPNOW_EVT_PEER_OK, payload, 6);
+            return;
+        }
+    }
 
     esp_now_peer_info_t peer = {0};
     memcpy(peer.peer_addr, payload, 6);
@@ -437,6 +478,28 @@ static void cmd_set_rate(const uint8_t *payload, uint16_t len)
     }
 }
 
+static void cmd_scan_begin(const uint8_t *payload, uint16_t len)
+{
+    uint16_t ms = 3500;
+    if (len >= 2 && payload) {
+        ms = (uint16_t)payload[0] | ((uint16_t)payload[1] << 8);
+        if (ms < 500) {
+            ms = 500;
+        }
+        if (ms > 10000) {
+            ms = 10000;
+        }
+    }
+    s_discover_mode = true;
+    s_discover_until = xTaskGetTickCount() + pdMS_TO_TICKS(ms);
+    ESP_LOGI(TAG, "scan discover window %u ms", (unsigned)ms);
+}
+
+static void cmd_scan_end(void)
+{
+    s_discover_mode = false;
+}
+
 void espnow_process_host_cmd(const uint8_t *payload, uint16_t len)
 {
     if (!payload || len < 1) {
@@ -449,7 +512,7 @@ void espnow_process_host_cmd(const uint8_t *payload, uint16_t len)
 
     switch (cmd) {
     case ESPNOW_CMD_INIT:
-        cmd_init();
+        cmd_init(args, args_len);
         break;
     case ESPNOW_CMD_DEINIT:
         cmd_deinit();
@@ -467,10 +530,20 @@ void espnow_process_host_cmd(const uint8_t *payload, uint16_t len)
         cmd_set_pmk(args, args_len);
         break;
     case ESPNOW_CMD_LOCK_CHANNEL:
-        (void)espnow_lock_radio_channel(s_radio_ch);
+        if (args_len >= 1 && args && args[0] >= 1 && args[0] <= 13) {
+            (void)espnow_lock_radio_channel(args[0]);
+        } else {
+            (void)espnow_lock_radio_channel(s_radio_ch);
+        }
         break;
     case ESPNOW_CMD_SET_RATE:
         cmd_set_rate(args, args_len);
+        break;
+    case ESPNOW_CMD_SCAN_BEGIN:
+        cmd_scan_begin(args, args_len);
+        break;
+    case ESPNOW_CMD_SCAN_END:
+        cmd_scan_end();
         break;
     default:
         ESP_LOGW(TAG, "Unknown ESP-NOW cmd: 0x%02x", cmd);

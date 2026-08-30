@@ -24,6 +24,10 @@ pub fn run(enc: *state_mod.ExtEncoder, now_ms: u32) void {
 
     ops.onJogModeChange(enc, d, st);
 
+    // A mode change resets motion accumulators. Record this sample afterwards
+    // so the stop timer still starts from the count that initiated the jog.
+    if (delta != 0) enc.last_wheel_move_ms = now_ms;
+
     if (!ops.canJog(st, axis, d)) {
         ops.handleBlocked(enc, d, st, axis, state_u8, delta);
         return;
@@ -39,11 +43,14 @@ pub fn run(enc: *state_mod.ExtEncoder, now_ms: u32) void {
         }
     }
 
-    if (!cont and enc.pending_steps != 0) {
-        jog.drainStep(enc, d, axis, st, now_ms);
+    if (delta == 0) {
+        ops.releaseOnWheelStop(enc, d, cont, st, axis, state_u8, now_ms);
     }
 
-    if (delta == 0) {
-        ops.releaseOnWheelStop(enc, d, cont, st, axis, state_u8);
+    // Stop handling must run before draining STEP commands. Once the wheel is
+    // quiet, releaseOnWheelStop discards any backlog instead of feeding it to
+    // the controller after the operator has let go of the wheel.
+    if (!cont and enc.pending_steps != 0) {
+        jog.drainStep(enc, d, axis, st, now_ms);
     }
 }

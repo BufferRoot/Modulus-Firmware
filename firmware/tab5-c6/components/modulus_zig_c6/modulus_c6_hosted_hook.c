@@ -5,6 +5,7 @@
 #include "modulus_c6_hosted_hook.h"
 
 #include "modulus_c6_ble.h"
+#include "modulus_c6_board.h"
 #include "modulus_c6_espnow.h"
 #include "modulus_c6_thread.h"
 #include "modulus_c6_zigbee.h"
@@ -16,6 +17,7 @@ static const char *TAG = "modulus_c6_hosted";
 
 void modulus_c6_hosted_after_init(void)
 {
+    modulus_c6_board_uart_pullups();
     ESP_LOGI(TAG, "esp_hosted slave up - Modulus radio hooks");
     /* C policy stubs / BLE HCI — run even when Zig runtime is off. */
     modulus_c6_ble_init();

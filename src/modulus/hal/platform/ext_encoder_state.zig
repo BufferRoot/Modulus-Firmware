@@ -41,6 +41,8 @@ pub const ExtEncoder = struct {
     pend_max: i32 = consts.default_pend_max,
     /// Timestamp of last STEP drain / CONT jog send.
     last_jog_send_ms: u32 = 0,
+    /// Timestamp of the most recent non-zero encoder delta.
+    last_wheel_move_ms: u32 = 0,
     /// First detent arrival in current coalesce window.
     coal_start_ms: u32 = 0,
     /// Per-chip jog increments from NVS `cnc_incr` (mm) — handwheel distance.
@@ -111,6 +113,7 @@ pub const ExtEncoder = struct {
         self.pending_steps = 0;
         self.cont_feed = 0;
         self.last_cont_sign = 0;
+        self.last_wheel_move_ms = 0;
     }
 
     pub fn clampPending(self: *ExtEncoder) void {

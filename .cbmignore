@@ -1,0 +1,13 @@
+# Build outputs and caches — keep CBM indexing lean on Tab5/Zig monorepo
+zig-out/
+zig-pkg/
+**/managed_components/
+**/build/
+**/node_modules/
+**/.git/
+**/zig-out/
+**/zig-pkg/
+firmware/**/build/
+**/.cache/
+**/dist/
+**/target/

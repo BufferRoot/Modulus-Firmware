@@ -10,8 +10,40 @@
 
 static const char *TAG = "modulus_tab5";
 
+/* Radio work reboots the P4 while the C6 keeps running, so the C6 log only ever
+ * shows a fresh SDIO handshake. This names the cause on the very next boot. */
+static void log_reset_reason(void)
+{
+    const esp_reset_reason_t reason = esp_reset_reason();
+    const char *name;
+    bool abnormal = true;
+    switch (reason) {
+    case ESP_RST_POWERON:   name = "power-on";              abnormal = false; break;
+    case ESP_RST_EXT:       name = "external reset pin";    abnormal = false; break;
+    case ESP_RST_SW:        name = "esp_restart()";         abnormal = false; break;
+    case ESP_RST_DEEPSLEEP: name = "deep-sleep wake";       abnormal = false; break;
+    case ESP_RST_PANIC:     name = "PANIC / CPU exception"; break;
+    case ESP_RST_INT_WDT:   name = "INTERRUPT watchdog";    break;
+    case ESP_RST_TASK_WDT:  name = "TASK watchdog";         break;
+    case ESP_RST_WDT:       name = "other watchdog";        break;
+    case ESP_RST_BROWNOUT:  name = "BROWNOUT (power rail sag)"; break;
+    case ESP_RST_SDIO:      name = "SDIO reset";            break;
+    case ESP_RST_USB:       name = "USB serial (monitor)";  abnormal = false; break;
+    case ESP_RST_JTAG:      name = "JTAG";                  abnormal = false; break;
+    default:                name = "unknown";               break;
+    }
+    if (abnormal) {
+        ESP_LOGE(TAG, "Reset reason: %s (%d) — last boot ended abnormally; "
+                      "run 'idf.py coredump-info' for the backtrace",
+                 name, (int)reason);
+    } else {
+        ESP_LOGI(TAG, "Reset reason: %s (%d)", name, (int)reason);
+    }
+}
+
 void app_main(void)
 {
+    log_reset_reason();
     ESP_LOGI(TAG, "Modulus Zig %s (ABI epoch %lu)", modulus_zig_version(),
              (unsigned long)modulus_zig_abi_epoch());
     modulus_zig_boot();
@@ -34,7 +66,7 @@ void app_main(void)
         esp_restart();
     }
     if (!modulus_wireless_ready()) {
-        ESP_LOGW(TAG, "Wireless not ready — reflash C6 slave on COM6 if SDIO fails");
+        ESP_LOGW(TAG, "Wireless not ready — reflash C6 slave on COM18 if SDIO fails");
     }
     ESP_LOGI(TAG, "Core 0 evt_dispatch + Core 1 sys_task running");
 

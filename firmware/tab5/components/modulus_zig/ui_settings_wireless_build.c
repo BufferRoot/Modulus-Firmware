@@ -586,14 +586,14 @@ void wl_build_espnow_hub(lv_obj_t *p)
         settings_note(p, "Enable radio for peer discovery and bridge.");
     } else {
         /* Scan sits directly under the on/off toggle. */
-        const bool scanning = !modulus_wireless_espnow_scan_done();
+        const bool en_busy = (strcmp(modulus_wireless_espnow_scan_text(), "Scanning...") == 0);
         wl_en_scan_lbl = settings_detail_row(p, "Scan", modulus_wireless_espnow_scan_text());
         strncpy(wl_en_scan_cache, modulus_wireless_espnow_scan_text(), sizeof(wl_en_scan_cache) - 1);
-        lv_obj_t *scan_btn = settings_action_row(p, "Scan for peers", scanning ? "..." : "");
+        lv_obj_t *scan_btn = settings_action_row(p, "Scan for peers", en_busy ? "..." : "");
         settings_bind_menu_click(scan_btn, espnow_scan_cb, NULL);
 
         /* Discovered (not-yet-saved) peers — tap to save + make active. */
-        const int en_n = scanning ? 0 : modulus_wireless_espnow_scan_count();
+        const int en_n = en_busy ? 0 : modulus_wireless_espnow_scan_count();
         bool printed_disc = false;
         for (int i = 0; i < en_n && i < MODULUS_ESPNOW_MAX_SCAN; i++) {
             modulus_espnow_peer_t peer = {};
@@ -685,7 +685,7 @@ void wl_build_espnow_adv(lv_obj_t *p)
     lv_obj_t *rate = settings_dropdown_row(
         p, "PHY rate",
         "1 Mbps\n2 Mbps\n5.5 Mbps\n11 Mbps\n6 Mbps OFDM\n12 Mbps OFDM\n24 Mbps OFDM\nMCS0\nMCS3",
-        modulus_nvs_get_u8("en_rate", 6));
+        modulus_nvs_get_u8("en_rate", 3));
     lv_obj_add_event_cb(rate, dd_u8_cb, LV_EVENT_VALUE_CHANGED, (void *)"en_rate");
     settings_note(p, "Adaptive: 3 send fails drop one tier; recovers after clean sends.");
     lv_obj_t *enc = settings_toggle_row(p, "PMK encryption", modulus_nvs_get_u8("en_enc", 0) != 0);

@@ -100,14 +100,24 @@ pub fn releaseOnWheelStop(
     st: cnc_state.MachineStatus,
     axis: u8,
     state_u8: u8,
+    now_ms: u32,
 ) void {
-    const step_done = cont or enc.pending_steps == 0;
-    if (step_done) {
-        if (cont) {
-            enc.cont_feed = 0;
-            enc.last_cont_sign = 0;
-        }
-        cancelJog(enc, d);
+    if (enc.last_wheel_move_ms != 0 and
+        now_ms -% enc.last_wheel_move_ms < consts.wheel_stop_quiet_ms)
+    {
+        trace.wheel(enc, 0, st.mpg_active, axis, state_u8, 0, 0, 0);
+        return;
     }
+
+    // Once the operator stops turning, never drain a stale STEP backlog.
+    // Abort the controller jog and discard unsent distance.
+    enc.pending_steps = 0;
+    enc.pulse_remainder = 0;
+    enc.coal_start_ms = 0;
+    if (cont) {
+        enc.cont_feed = 0;
+        enc.last_cont_sign = 0;
+    }
+    cancelJog(enc, d);
     trace.wheel(enc, 0, st.mpg_active, axis, state_u8, 0, 0, 0);
 }

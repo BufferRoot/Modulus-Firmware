@@ -4,6 +4,8 @@
 pub const WirelessUiCmd = union(enum) {
     scan,
     wifi_connect: struct { ssid: []const u8, pass: []const u8 },
+    wifi_connect_saved,
+    wifi_forget,
     wifi_disconnect,
     ble_pair: struct { idx: u8, passkey: []const u8 },
     ble_disconnect,

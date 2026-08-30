@@ -130,6 +130,16 @@ set(MODULUS_LVGL_UI_SRCS
     "ui_touch_sound.c"
 )
 
+# LVGL is needed only by the widget UI. Under ZIG_UI nothing links it: the
+# engine paints the DPI FB itself, display_shim uses bsp_display_new_with_handles
+# + bsp_touch_new, and BSP_CONFIG_NO_GRAPHIC_LIB=1 (set in the project
+# CMakeLists) stops bsp_display.c compiling its lvgl_port_* paths.
+if(CONFIG_MODULUS_ZIG_UI_ENGINE)
+    set(MODULUS_LVGL_REQ "")
+else()
+    set(MODULUS_LVGL_REQ espressif__esp_lvgl_port lvgl__lvgl)
+endif()
+
 idf_component_register(
     SRCS ${MODULUS_CORE_SRCS}
     INCLUDE_DIRS "include" "assets/icons/generated"
@@ -141,7 +151,7 @@ idf_component_register(
              esp_driver_ppa esp_mm
              esp_timer mbedtls esp-tls bt
              espressif__m5stack_tab5 espressif__bmi270 espressif__esp-dsp espressif__esp_lcd_touch
-             espressif__esp_lvgl_port lvgl__lvgl esp_lcd espressif__usb
+             ${MODULUS_LVGL_REQ} esp_lcd espressif__usb
              esp_wifi esp_netif esp_event espressif__esp_hosted
     PRIV_REQUIRES chmorgan__esp-audio-player
 )

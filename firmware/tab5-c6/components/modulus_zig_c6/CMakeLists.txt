@@ -38,7 +38,7 @@ if(ZIG_EXECUTABLE AND CONFIG_MODULUS_ZIG_C6_RUNTIME)
     endif()
 
     idf_component_register(
-        SRCS "shim.c" "modulus_bridge_c6.c" "modulus_c6_ble.c" "modulus_c6_espnow.c" "modulus_c6_thread.c" "modulus_c6_zigbee.c" "modulus_c6_hosted_hook.c"
+        SRCS "shim.c" "modulus_bridge_c6.c" "modulus_c6_ble.c" "modulus_c6_espnow.c" "modulus_c6_thread.c" "modulus_c6_zigbee.c" "modulus_c6_hosted_hook.c" "modulus_c6_board.c"
         INCLUDE_DIRS "include"
         REQUIRES ${MODULUS_ZIG_C6_REQUIRES}
     )
@@ -52,7 +52,7 @@ else()
     endif()
 
     idf_component_register(
-        SRCS "shim.c" "modulus_bridge_c6.c" "modulus_c6_ble.c" "modulus_c6_espnow.c" "modulus_c6_thread.c" "modulus_c6_zigbee.c" "modulus_c6_hosted_hook.c"
+        SRCS "shim.c" "modulus_bridge_c6.c" "modulus_c6_ble.c" "modulus_c6_espnow.c" "modulus_c6_thread.c" "modulus_c6_zigbee.c" "modulus_c6_hosted_hook.c" "modulus_c6_board.c"
         INCLUDE_DIRS "include"
         REQUIRES ${MODULUS_ZIG_C6_REQUIRES}
     )

@@ -32,7 +32,6 @@ extern void modulus_zig_transport_reinit(void);
 
 static uint8_t s_sleep_mode = 0;
 static uint16_t s_deep_sleep_to = 120;
-static lv_timer_t *s_ds_timer = NULL;
 
 static bool s_deep_sleeping = false;
 static bool s_sleep_task_running = false;
@@ -52,9 +51,12 @@ static void deep_sleep_worker(void *arg);
 static void deep_sleep_worker_impl(void);
 static void power_down_worker(void *arg);
 
-static void deep_sleep_check_cb(lv_timer_t *timer)
+/* Called from the display_shim esp_timer with the authoritative inactivity
+ * figure (LVGL's when LVGL owns the panel, the shim's monotonic counter when
+ * the Zig engine does). Was an lv_timer reading lv_display_get_inactive_time,
+ * which lvgl_port_stop() left frozen under the Zig UI engine. */
+void modulus_power_poll_deep_sleep(uint32_t inactive_ms)
 {
-    (void)timer;
     if (!modulus_display_is_sleeping()) {
         return;
     }
@@ -68,16 +70,10 @@ static void deep_sleep_check_cb(lv_timer_t *timer)
         return;
     }
 
-    lv_display_t *disp = modulus_display_get_lvgl();
-    if (!disp) {
-        return;
-    }
-
-    const uint32_t idle_ms = lv_display_get_inactive_time(disp);
     const uint32_t thresh_ms = (uint32_t)s_deep_sleep_to * 1000U;
-    if (idle_ms >= thresh_ms) {
+    if (inactive_ms >= thresh_ms) {
         ESP_LOGI(TAG, "Display idle %lu ms >= %lu ms — deep sleep",
-                 (unsigned long)idle_ms, (unsigned long)thresh_ms);
+                 (unsigned long)inactive_ms, (unsigned long)thresh_ms);
         modulus_power_enter_deep_sleep();
     }
 }
@@ -173,9 +169,7 @@ void modulus_power_init(void)
     modulus_power_apply_rails();
     modulus_wakeup_init();
 
-    if (s_sleep_mode == 1 && s_ds_timer == NULL) {
-        s_ds_timer = lv_timer_create(deep_sleep_check_cb, 2000, NULL);
-    }
+    /* No timer to create — display_shim's activity esp_timer polls us. */
 
     ESP_LOGI(TAG, "Power init mode=%u ds_to=%us", s_sleep_mode, s_deep_sleep_to);
 }
@@ -414,10 +408,6 @@ void modulus_power_set_sleep_policy(uint8_t mode, uint16_t dsto_sec)
 {
     s_sleep_mode = mode;
     s_deep_sleep_to = dsto_sec;
-    if (s_sleep_mode == 1 && s_ds_timer == NULL) {
-        s_ds_timer = lv_timer_create(deep_sleep_check_cb, 2000, NULL);
-    } else if (s_sleep_mode != 1 && s_ds_timer != NULL) {
-        lv_timer_delete(s_ds_timer);
-        s_ds_timer = NULL;
-    }
+    /* `mode` is read by modulus_power_poll_deep_sleep on the display timer;
+     * nothing to start or stop. */
 }

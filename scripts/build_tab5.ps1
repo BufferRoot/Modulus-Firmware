@@ -44,6 +44,9 @@ function Ensure-IdfEnv {
     if (-not (Test-Path -LiteralPath $export)) {
         Write-Error "Missing export.ps1 at $export"
     }
+    # export.ps1 picks the venv from whichever `python` is first on PATH; pin it.
+    . "$PSScriptRoot\_idf_env.ps1"
+    Set-IdfPythonEnv
     & $export | Out-Null
 }
 
@@ -77,7 +80,7 @@ try {
     if ($Lab) {
         $env:SDKCONFIG_DEFAULTS = "sdkconfig.defaults;sdkconfig.defaults.lvgl_lab"
         Write-Host "==> LVGL lab profile (SDKCONFIG_DEFAULTS=$env:SDKCONFIG_DEFAULTS)"
-        Write-Warning "Lab build compiles LVGL UI — expect larger app + factory pressure. Not for field flash."
+        Write-Warning 'Lab build compiles LVGL UI - expect larger app + factory pressure. Not for field flash.'
     } else {
         Write-Host "==> Zig-UI production profile (sdkconfig.defaults)"
     }
@@ -104,10 +107,10 @@ try {
         $factoryBytes = 0x480000
         $usedPct = [math]::Round(100.0 * $appBytes / $factoryBytes, 1)
         $freePct = [math]::Round(100.0 - $usedPct, 1)
-        Write-Host ("==> App size: 0x{0:x} ({1:N0} bytes, {2}% factory used, {3}% free)" -f `
+        Write-Host ('==> App size: 0x{0:x} ({1:N0} bytes, {2}% factory used, {3}% free)' -f `
             $appBytes, $appBytes, $usedPct, $freePct)
         if ($usedPct -ge 85.0) {
-            Write-Warning ("Factory partition headroom low: {0}% used (threshold 85%). Review Zig assets / LVGL link before adding ROM." -f $usedPct)
+            Write-Warning ('Factory partition headroom low: {0}% used (threshold 85%). Review Zig assets / LVGL link before adding ROM.' -f $usedPct)
         }
         $elfPath = Join-Path $RepoRoot "firmware\tab5\build\modulus_tab5.elf"
         if (Test-Path -LiteralPath $elfPath) {
@@ -123,7 +126,7 @@ try {
         if (-not $Port) {
             Write-Error "Pass -Port COMx to flash (e.g. -Flash -Port COM5)"
         }
-        Write-Host "==> idf.py -p $Port flash"
+        Write-Host ('==> idf.py -p {0} flash' -f $Port)
         idf.py -p $Port flash
     }
 }

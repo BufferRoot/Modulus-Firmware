@@ -134,6 +134,13 @@ pub const PanelFb = struct {
     h: u16 = tokens.Logical.panel_h,
     /// Pixels written last blit (rotate-on-write cost proxy).
     last_write_px: u32 = 0,
+    /// True when the last blit went through `hw_rotate` (PPA DMA wrote `dst`,
+    /// the CPU did not). The cache maintenance direction depends on this:
+    /// CPU writes need write-back (C2M), DMA writes need invalidate (M2C).
+    /// Flushing C2M after a DMA write pushes stale CPU lines over the DMA
+    /// result — the buffer was seeded by memcpy at bind and may still hold
+    /// dirty lines from a CPU-transpose fallback frame.
+    last_write_was_dma: bool = false,
     /// False when `pixels` is the DPI scanout buffer (owned by the panel driver).
     owned: bool = true,
     /// "Flip display" — rotate 270° instead of 90° (Engine.mapPointer inverts touch to match).
@@ -191,9 +198,11 @@ pub const PanelFb = struct {
         if (hw_rotate) |hw| {
             if (hw(src, dst, logical.w, logical.h, self.w, self.h, bounds, self.flipped)) {
                 self.last_write_px = @intCast(@as(u32, @intCast(bounds.w)) * @as(u32, @intCast(bounds.h)));
+                self.last_write_was_dma = true;
                 return;
             }
         }
+        self.last_write_was_dma = false;
 
         var written: u32 = 0;
         // A 90° rotate reads a logical column (stride `lw` px) to fill a panel

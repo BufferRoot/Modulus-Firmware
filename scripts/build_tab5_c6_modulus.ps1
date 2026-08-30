@@ -4,9 +4,10 @@
 param(
     [ValidateSet("build", "flash", "monitor", "menuconfig", "fullclean", "set-target", "flash-monitor")]
     [string]$Action = "build",
-    [string]$Port = "COM6",
+    [string]$Port = "COM18",
     [switch]$ZigOnly,
-    [switch]$ZigbeeExclusive
+    [switch]$ZigbeeExclusive,
+    [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
@@ -284,7 +285,34 @@ try {
             idf.py build
             if ($LASTEXITCODE -ne 0) { throw "idf.py build failed with exit $LASTEXITCODE" }
         }
-        "flash" { idf.py -p $Port flash }
+        "flash" {
+            if (-not (Test-Path (Join-Path $SlaveDir "build\network_adapter.bin"))) {
+                Write-Host "C6 build missing - building before flash"
+                idf.py build
+                if ($LASTEXITCODE -ne 0) { throw "idf.py build failed with exit $LASTEXITCODE" }
+            }
+            if ($Force) {
+                $bld = Join-Path $SlaveDir "build"
+                Get-ChildItem $bld -Recurse -Filter "*_flashed.bin" -ErrorAction SilentlyContinue |
+                    Remove-Item -Force -ErrorAction SilentlyContinue
+                Write-Host "Force flash: esptool write-flash (no incremental diff) on $Port"
+                Push-Location $bld
+                try {
+                    python -m esptool --chip esp32c6 -p $Port -b 460800 `
+                        --before default-reset --after hard-reset write-flash `
+                        --flash-mode dio --flash-freq 80m --flash-size 4MB `
+                        0x0 bootloader/bootloader.bin `
+                        0x8000 partition_table/partition-table.bin `
+                        0xd000 ota_data_initial.bin `
+                        0x10000 network_adapter.bin
+                    if ($LASTEXITCODE -ne 0) { throw "esptool flash failed with exit $LASTEXITCODE" }
+                } finally {
+                    Pop-Location
+                }
+            } else {
+                idf.py -p $Port flash
+            }
+        }
         "monitor" { idf.py -p $Port monitor }
         "flash-monitor" { idf.py -p $Port flash monitor }
         "menuconfig" { idf.py menuconfig }

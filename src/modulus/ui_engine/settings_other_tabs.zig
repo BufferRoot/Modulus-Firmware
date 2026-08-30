@@ -252,12 +252,12 @@ pub const HitResult = struct {
     aux: u8 = 0,
 };
 
-pub fn paint(logical: *fb.LogicalFb, theme: tokens.Theme, prefs: prefs_mod.Prefs, tab: usize, scroll: i32, mach_pull_t: f32) Layout {
+pub fn paint(logical: *fb.LogicalFb, theme: tokens.Theme, prefs: *const prefs_mod.Prefs, tab: usize, scroll: i32, mach_pull_t: f32) Layout {
     return switch (tab) {
         0 => paintCnc(logical, theme, prefs.cnc, scroll),
         3 => paintAudio(logical, theme, prefs.audio, scroll),
         4 => paintWireless(logical, theme, prefs.wireless, scroll),
-        5 => paintPower(logical, theme, prefs.power, prefs.system, scroll),
+        5 => paintPower(logical, theme, prefs.power, prefs.power_tel, prefs.system, scroll),
         6 => paintSecurity(logical, theme, prefs.security, scroll),
         7 => paintMachine(logical, theme, prefs.machine, prefs.cnc, scroll, mach_pull_t),
         8 => paintStorage(logical, theme, prefs, scroll),
@@ -551,13 +551,13 @@ pub fn factoryReset(prefs: *prefs_mod.Prefs) void {
     prefs.display.resetDefaults();
 }
 
-fn healthKinds(p: prefs_mod.Prefs) [5]form.StatusKind {
+fn healthKinds(p: *const prefs_mod.Prefs) [5]form.StatusKind {
     const radio = p.wireless.wifi or p.wireless.bt or p.wireless.espnow or p.wireless.zigbee or p.wireless.thread;
     const c6: form.StatusKind = if (p.system.c6_ready) .ok else if (radio) .warn else .err;
     const wifi: form.StatusKind = if (p.wireless.wifi) .ok else if (radio) .warn else .err;
     const cnc: form.StatusKind = if (p.cnc.session_up) .ok else .warn;
     const sd: form.StatusKind = if (p.storage.sd_mounted) .ok else .warn;
-    const batt: form.StatusKind = if (p.power.bat_pct < 15) .err else if (p.power.bat_pct < 30) .warn else .ok;
+    const batt: form.StatusKind = if (p.power_tel.bat_pct < 15) .err else if (p.power_tel.bat_pct < 30) .warn else .ok;
     return .{ c6, wifi, cnc, sd, batt };
 }
 
@@ -789,17 +789,18 @@ fn paintWireless(logical: *fb.LogicalFb, theme: tokens.Theme, w: prefs_mod.Wirel
             lay.push(.wl_back, form.paintBackRow(logical, theme, &cur, scroll, "Wireless"), .action);
             lay.push(.wl_chips, form.paintChipRow(logical, theme, &cur, scroll, &wl_chips, 0), .action);
             form.paintSection(logical, theme, &cur, scroll, "Status");
-            form.paintDetailStatus(logical, theme, &cur, scroll, "Radio", w.wifiRadioText(), if (w.wifi_conn) form.StatusKind.ok else if (w.wifi) .warn else .dim);
-            form.paintDetail(logical, theme, &cur, scroll, "SSID", if (w.wifi_conn) w.ssidSlice() else "--");
+            form.paintDetailStatus(logical, theme, &cur, scroll, "Radio", w.wifiStatusSlice(), if (w.wifi_conn) form.StatusKind.ok else if (w.wifi_connecting) .warn else if (w.wifi) .warn else .dim);
+            form.paintDetail(logical, theme, &cur, scroll, "SSID", if (w.wifi_conn or w.wifi_connecting) w.ssidSlice() else "--");
             form.paintDetail(logical, theme, &cur, scroll, "IP address", if (w.wifi_conn) w.ipSlice() else "--");
             lay.push(.wl_wifi, form.paintToggle(logical, theme, &cur, scroll, "Wi-Fi radio", w.wifi), .toggle);
             lay.push(.wl_ssid, form.paintAction(logical, theme, &cur, scroll, "Enter SSID", if (w.ssidSlice().len > 0) w.ssidSlice() else "Manual"), .action);
             form.paintSection(logical, theme, &cur, scroll, "Networks");
             form.paintDetail(logical, theme, &cur, scroll, "Scan", w.scanText());
-            lay.push(.wl_scan, form.paintActionState(logical, theme, &cur, scroll, "Scan for networks", if (w.wifi) "" else "Enable radio", w.wifi, false), .action);
-            if (w.scan_phase == 2 and w.scan_n > 0 and !w.wifi_conn) {
+            lay.push(.wl_scan, form.paintActionState(logical, theme, &cur, scroll, "Scan for networks", if (w.scan_phase == 1) "Scanning..." else if (w.wifi) "" else "Enable radio", w.wifi or w.scan_phase == 1, false), .action);
+            // Show APs even while connected (LVGL parity) so Scan is not a no-op after auto-connect.
+            if (w.scan_phase == 2 and w.scan_n > 0) {
                 form.paintSection(logical, theme, &cur, scroll, "Results");
-                form.paintNote(logical, theme, &cur, scroll, "Tap to connect");
+                form.paintNote(logical, theme, &cur, scroll, if (w.wifi_conn) "Tap to switch network" else "Tap to connect");
                 var i: u8 = 0;
                 const max_show: u8 = @min(w.scan_n, 3); // Hit slots wl_ap0..2
                 while (i < max_show) : (i += 1) {
@@ -814,8 +815,16 @@ fn paintWireless(logical: *fb.LogicalFb, theme: tokens.Theme, w: prefs_mod.Wirel
                         1 => .wl_ap1,
                         else => .wl_ap2,
                     };
-                    lay.push(hit, form.paintTwoLineAction(logical, theme, &cur, scroll, name, support), .action);
+                    const label = if (name.len > 0) name else "(hidden)";
+                    lay.push(hit, form.paintTwoLineAction(logical, theme, &cur, scroll, label, support), .action);
                 }
+            } else if (w.scan_phase == 2 and w.scan_n == 0) {
+                form.paintSection(logical, theme, &cur, scroll, "Results");
+                const empty: []const u8 = if (w.scan_c6_down)
+                    "C6 offline - dual-flash C6"
+                else
+                    "No networks found";
+                form.paintDetailStatus(logical, theme, &cur, scroll, "Status", empty, if (w.scan_c6_down) .warn else .dim);
             }
             if (w.wifi_conn) {
                 lay.push(.wl_disconnect, form.paintDestructiveAction(logical, theme, &cur, scroll, "Disconnect", ""), .action);
@@ -853,7 +862,7 @@ fn paintWireless(logical: *fb.LogicalFb, theme: tokens.Theme, w: prefs_mod.Wirel
             lay.push(.wl_back, form.paintBackRow(logical, theme, &cur, scroll, "Wireless"), .action);
             lay.push(.wl_chips, form.paintChipRow(logical, theme, &cur, scroll, &wl_chips, 1), .action);
             form.paintSection(logical, theme, &cur, scroll, "Status");
-            form.paintDetailStatus(logical, theme, &cur, scroll, "Radio", prefs_mod.WirelessPrefs.radioLabel(w.bt), if (w.bt) form.StatusKind.ok else .dim);
+            form.paintDetailStatus(logical, theme, &cur, scroll, "Radio", w.btStatusSlice(), if (w.bt_conn) form.StatusKind.ok else if (w.bt_connecting) .warn else if (w.bt) form.StatusKind.ok else .dim);
             form.paintDetail(logical, theme, &cur, scroll, "Paired", w.pairedText());
             lay.push(.wl_bt, form.paintToggle(logical, theme, &cur, scroll, "Bluetooth radio", w.bt), .toggle);
             if (!w.bt) {
@@ -884,7 +893,7 @@ fn paintWireless(logical: *fb.LogicalFb, theme: tokens.Theme, w: prefs_mod.Wirel
                         lay.push(.wl_bt_dev1, form.paintTwoLineAction(logical, theme, &cur, scroll, w.btLabel(1), s1), .action);
                     }
                 }
-                lay.push(.wl_scan, form.paintAction(logical, theme, &cur, scroll, "Scan for devices", if (w.bt_scan_phase == 1) "..." else ""), .action);
+                lay.push(.wl_scan, form.paintActionState(logical, theme, &cur, scroll, "Scan for devices", if (w.bt_scan_phase == 1) "Scanning..." else if (w.bt) "" else "Enable radio", w.bt or w.bt_scan_phase == 1, false), .action);
                 if (w.bt_adv_exp) {
                     form.paintSection(logical, theme, &cur, scroll, "Power");
                     _ = form.paintActionState(logical, theme, &cur, scroll, "Turn off when idle", "Coming soon", false, false);
@@ -914,7 +923,7 @@ fn paintWireless(logical: *fb.LogicalFb, theme: tokens.Theme, w: prefs_mod.Wirel
             } else {
                 const en_scan: []const u8 = switch (w.en_scan_phase) {
                     1 => "Scanning...",
-                    2 => "Done",
+                    2 => if (w.en_peer_n > 0) "Done" else "Done (none)",
                     else => "Idle",
                 };
                 form.paintDetail(logical, theme, &cur, scroll, "Scan", en_scan);
@@ -928,7 +937,7 @@ fn paintWireless(logical: *fb.LogicalFb, theme: tokens.Theme, w: prefs_mod.Wirel
                     }
                 }
                 form.paintSection(logical, theme, &cur, scroll, "Saved peers");
-                form.paintNote(logical, theme, &cur, scroll, "Tap to use; Active = bridge target");
+                form.paintNote(logical, theme, &cur, scroll, "Tap MAC to use; Remove deletes from list");
                 var any_saved = false;
                 if (w.peerSaved(0)) {
                     any_saved = true;
@@ -937,6 +946,7 @@ fn paintWireless(logical: *fb.LogicalFb, theme: tokens.Theme, w: prefs_mod.Wirel
                     } else {
                         lay.push(.wl_en_saved0, form.paintTwoLineAction(logical, theme, &cur, scroll, w.enSavedLabel(0), "Tap to use"), .action);
                     }
+                    lay.push(.wl_en_rm0, form.paintDestructiveAction(logical, theme, &cur, scroll, "Remove", w.enSavedLabel(0)), .action);
                 }
                 if (w.peerSaved(1)) {
                     any_saved = true;
@@ -945,9 +955,12 @@ fn paintWireless(logical: *fb.LogicalFb, theme: tokens.Theme, w: prefs_mod.Wirel
                     } else {
                         lay.push(.wl_en_saved1, form.paintTwoLineAction(logical, theme, &cur, scroll, w.enSavedLabel(1), "Tap to use"), .action);
                     }
+                    lay.push(.wl_en_rm1, form.paintDestructiveAction(logical, theme, &cur, scroll, "Remove", w.enSavedLabel(1)), .action);
                 }
                 if (!any_saved) {
                     form.paintDetailStatus(logical, theme, &cur, scroll, "Status", "None saved", .dim);
+                } else {
+                    lay.push(.wl_en_clear_peers, form.paintDestructiveAction(logical, theme, &cur, scroll, "Clear all saved peers", ""), .action);
                 }
                 lay.push(.wl_en_add_mac, form.paintAction(logical, theme, &cur, scroll, "Add MAC manually", ""), .action);
                 form.paintSection(logical, theme, &cur, scroll, "Traffic");
@@ -961,7 +974,6 @@ fn paintWireless(logical: *fb.LogicalFb, theme: tokens.Theme, w: prefs_mod.Wirel
                     lay.push(.wl_en_rate, form.paintDropdown(logical, theme, &cur, scroll, "PHY rate", w.rateLabel()), .dropdown);
                     lay.push(.wl_en_enc, form.paintToggle(logical, theme, &cur, scroll, "PMK encryption", w.en_enc), .toggle);
                     form.paintDetail(logical, theme, &cur, scroll, "PMK", "MODULUS_ENOW_PMK (fixed)");
-                    lay.push(.wl_en_clear_peers, form.paintDestructiveAction(logical, theme, &cur, scroll, "Clear saved scan list", ""), .action);
                     lay.push(.wl_en_adv, form.paintAction(logical, theme, &cur, scroll, "Hide advanced", ""), .action);
                 } else {
                     lay.push(.wl_en_adv, form.paintAction(logical, theme, &cur, scroll, "Advanced", ""), .action);
@@ -977,7 +989,7 @@ fn paintWireless(logical: *fb.LogicalFb, theme: tokens.Theme, w: prefs_mod.Wirel
             if (zb) {
                 const zb_st = w.zbStatusSlice();
                 const zb_ok = w.zb_joined or std.mem.indexOf(u8, zb_st, "Joined") != null;
-                form.paintDetailStatus(logical, theme, &cur, scroll, "Radio", zb_st, if (zb_ok) form.StatusKind.ok else if (w.zigbee) .warn else .dim);
+                form.paintDetailStatus(logical, theme, &cur, scroll, "Radio", zb_st, if (zb_ok) form.StatusKind.ok else if (w.zb_join_pending) .warn else if (w.zigbee) .warn else .dim);
                 form.paintDetail(logical, theme, &cur, scroll, "Network", w.zbNetworkSlice());
                 form.paintDetail(logical, theme, &cur, scroll, "Pairing", if (w.zb_scan_phase == 1) "Open" else "Closed");
                 lay.push(.wl_zigbee, form.paintToggle(logical, theme, &cur, scroll, "Radio enable", w.zigbee), .toggle);
@@ -987,7 +999,7 @@ fn paintWireless(logical: *fb.LogicalFb, theme: tokens.Theme, w: prefs_mod.Wirel
             if (zb) {
                 if (w.zigbee) {
                     form.paintSection(logical, theme, &cur, scroll, "Network control");
-                    lay.push(.wl_zb_join, if (w.zb_joined) form.paintActionAccent(logical, theme, &cur, scroll, "Join network", "Joined") else form.paintAction(logical, theme, &cur, scroll, "Join network", ""), .action);
+                    lay.push(.wl_zb_join, if (w.zb_joined) form.paintActionAccent(logical, theme, &cur, scroll, "Join network", "Joined") else if (w.zb_join_pending) form.paintAction(logical, theme, &cur, scroll, "Join network", "Joining...") else form.paintAction(logical, theme, &cur, scroll, "Join network", ""), .action);
                     lay.push(.wl_zb_leave, form.paintAction(logical, theme, &cur, scroll, "Leave network", ""), .action);
                     if (!w.zb_joined) {
                         form.paintNote(logical, theme, &cur, scroll, "Join the network first, then pair devices.");
@@ -1040,6 +1052,8 @@ fn paintWireless(logical: *fb.LogicalFb, theme: tokens.Theme, w: prefs_mod.Wirel
                 } else {
                     form.paintNote(logical, theme, &cur, scroll, "Enable radio for network and device control.");
                 }
+            } else if (!w.thread_supported) {
+                form.paintNote(logical, theme, &cur, scroll, "Thread not supported on this C6 image.");
             } else {
                 form.paintDetail(logical, theme, &cur, scroll, "Network", if (w.th_attached) "Attached" else "None");
                 lay.push(.wl_thread, form.paintToggle(logical, theme, &cur, scroll, "Radio enable", w.thread), .toggle);
@@ -1088,14 +1102,17 @@ fn paintWireless(logical: *fb.LogicalFb, theme: tokens.Theme, w: prefs_mod.Wirel
                 lay.push(.wl_en_page, if (w.espnow) form.paintActionAccent(logical, theme, &cur, scroll, "ESP-NOW", "On") else form.paintAction(logical, theme, &cur, scroll, "ESP-NOW", ""), .action);
                 form.paintSection(logical, theme, &cur, scroll, "802.15.4 radios");
                 lay.push(.wl_zb_page, if (w.zigbee) form.paintActionAccent(logical, theme, &cur, scroll, "Zigbee", "On") else form.paintAction(logical, theme, &cur, scroll, "Zigbee", ""), .action);
-                lay.push(.wl_th_page, if (w.thread) form.paintActionAccent(logical, theme, &cur, scroll, "Thread", "On") else form.paintAction(logical, theme, &cur, scroll, "Thread", ""), .action);
+                if (w.thread_supported) {
+                    lay.push(.wl_th_page, if (w.thread) form.paintActionAccent(logical, theme, &cur, scroll, "Thread", "On") else form.paintAction(logical, theme, &cur, scroll, "Thread", ""), .action);
+                }
                 form.paintSection(logical, theme, &cur, scroll, "Antenna");
                 form.paintDetail(logical, theme, &cur, scroll, "Active", if (w.ant_ext) "External MMCX" else "Internal PCB");
                 lay.push(.wl_ant, form.paintToggle(logical, theme, &cur, scroll, "External MMCX", w.ant_ext), .toggle);
                 if (w.hub_ref_exp) {
                     form.paintDetail(logical, theme, &cur, scroll, "Module", "ESP32-C6-MINI-1U");
                     form.paintDetail(logical, theme, &cur, scroll, "Transport", "ESP-Hosted SDIO2");
-                    form.paintDetail(logical, theme, &cur, scroll, "Channels", "ESP-NOW=8 Zigbee=9 Thread=10");
+                    const ch_note = if (w.thread_supported) "ESP-NOW=8 Zigbee=9 Thread=10" else "ESP-NOW=8 Zigbee=9";
+                    form.paintDetail(logical, theme, &cur, scroll, "Channels", ch_note);
                     lay.push(.wl_hub_ref, form.paintAction(logical, theme, &cur, scroll, "Hide radio reference", ""), .action);
                 } else {
                     lay.push(.wl_hub_ref, form.paintAction(logical, theme, &cur, scroll, "Show radio reference", ""), .action);
@@ -1108,7 +1125,7 @@ fn paintWireless(logical: *fb.LogicalFb, theme: tokens.Theme, w: prefs_mod.Wirel
     return lay;
 }
 
-fn paintPower(logical: *fb.LogicalFb, theme: tokens.Theme, p: prefs_mod.PowerPrefs, sys: prefs_mod.SystemPrefs, scroll: i32) Layout {
+fn paintPower(logical: *fb.LogicalFb, theme: tokens.Theme, p: prefs_mod.PowerPrefs, tel: prefs_mod.PowerTelemetry, sys: prefs_mod.SystemPrefs, scroll: i32) Layout {
     var cur: form.Cursor = .{};
     var lay: Layout = .{};
     const adv = form.isAdvanced();
@@ -1118,7 +1135,7 @@ fn paintPower(logical: *fb.LogicalFb, theme: tokens.Theme, p: prefs_mod.PowerPre
 
     form.paintSection(logical, theme, &cur, scroll, "Power");
     form.paintSection(logical, theme, &cur, scroll, "Battery status");
-    if (p.ina_ok) {
+    if (tel.ina_ok) {
         var pctbuf: [12]u8 = undefined;
         var vbuf: [16]u8 = undefined;
         var ibuf: [16]u8 = undefined;
@@ -1126,36 +1143,36 @@ fn paintPower(logical: *fb.LogicalFb, theme: tokens.Theme, p: prefs_mod.PowerPre
         var rbuf: [32]u8 = undefined;
         var ebuf: [32]u8 = undefined;
         var tbuf: [16]u8 = undefined;
-        const pct_kind: form.StatusKind = if (p.charge_state == 1)
+        const pct_kind: form.StatusKind = if (tel.charge_state == 1)
             .ok
-        else if (p.charge_state == 2)
+        else if (tel.charge_state == 2)
             .ok
-        else if (p.bat_pct <= 20)
+        else if (tel.bat_pct <= 20)
             .err
-        else if (p.bat_pct <= 50)
+        else if (tel.bat_pct <= 50)
             .warn
         else
             .ok;
-        const st_kind: form.StatusKind = if (p.charge_state == 1)
+        const st_kind: form.StatusKind = if (tel.charge_state == 1)
             .ok
-        else if (p.charge_state == 2)
+        else if (tel.charge_state == 2)
             .ok
-        else if (p.charge_state == 3)
+        else if (tel.charge_state == 3)
             .warn
-        else if (p.bat_pct <= 20)
+        else if (tel.bat_pct <= 20)
             .err
-        else if (p.bat_pct <= 50)
+        else if (tel.bat_pct <= 50)
             .warn
         else
             .dim;
-        form.paintDetailStatus(logical, theme, &cur, scroll, "Charge", p.formatPct(&pctbuf), pct_kind);
-        form.paintDetailStatus(logical, theme, &cur, scroll, "State", p.chargeStateLabel(), st_kind);
-        form.paintDetail(logical, theme, &cur, scroll, "Voltage", p.formatVolt(&vbuf));
-        form.paintDetail(logical, theme, &cur, scroll, "Current", p.formatCurr(&ibuf));
-        form.paintDetail(logical, theme, &cur, scroll, "Power", p.formatPower(&wbuf));
-        form.paintDetail(logical, theme, &cur, scroll, "Charge rate", p.formatRate(&rbuf));
-        form.paintDetail(logical, theme, &cur, scroll, "Time remaining", p.formatEta(&ebuf));
-        form.paintDetail(logical, theme, &cur, scroll, "SoC temperature", p.formatTemp(&tbuf));
+        form.paintDetailStatus(logical, theme, &cur, scroll, "Charge", tel.formatPct(&pctbuf), pct_kind);
+        form.paintDetailStatus(logical, theme, &cur, scroll, "State", tel.chargeStateLabel(), st_kind);
+        form.paintDetail(logical, theme, &cur, scroll, "Voltage", tel.formatVolt(&vbuf));
+        form.paintDetail(logical, theme, &cur, scroll, "Current", tel.formatCurr(&ibuf));
+        form.paintDetail(logical, theme, &cur, scroll, "Power", tel.formatPower(&wbuf));
+        form.paintDetail(logical, theme, &cur, scroll, "Charge rate", tel.formatRate(&rbuf));
+        form.paintDetail(logical, theme, &cur, scroll, "Time remaining", tel.formatEta(&ebuf));
+        form.paintDetail(logical, theme, &cur, scroll, "SoC temperature", tel.formatTemp(&tbuf));
     } else {
         form.paintDetailStatus(logical, theme, &cur, scroll, "Battery", "Monitor unavailable", .err);
     }
@@ -1421,7 +1438,7 @@ const k_port_map = [_]struct { title: []const u8, detail: []const u8 }{
     .{ .title = "COM.X STAMP", .detail = "G46 G6 G31 G32 G33 G19 G18 G5" },
 };
 
-fn paintStorage(logical: *fb.LogicalFb, theme: tokens.Theme, prefs: prefs_mod.Prefs, scroll: i32) Layout {
+fn paintStorage(logical: *fb.LogicalFb, theme: tokens.Theme, prefs: *const prefs_mod.Prefs, scroll: i32) Layout {
     const s = prefs.storage;
     const usb5v = prefs.power.usb5v;
     const ext5v = prefs.power.ext5v;
@@ -1535,7 +1552,7 @@ fn paintStorage(logical: *fb.LogicalFb, theme: tokens.Theme, prefs: prefs_mod.Pr
     return lay;
 }
 
-fn paintSystem(logical: *fb.LogicalFb, theme: tokens.Theme, prefs: prefs_mod.Prefs, scroll: i32) Layout {
+fn paintSystem(logical: *fb.LogicalFb, theme: tokens.Theme, prefs: *const prefs_mod.Prefs, scroll: i32) Layout {
     const s = prefs.system;
     var cur: form.Cursor = .{};
     var lay: Layout = .{};
@@ -1635,7 +1652,7 @@ test "other tabs paint non-empty" {
     const prefs: prefs_mod.Prefs = .{};
     const tabs = [_]usize{ 0, 3, 4, 5, 6, 7, 8, 9 };
     for (tabs) |t| {
-        const lay = paint(&logical, theme, prefs, t, 0, 0);
+        const lay = paint(&logical, theme, &prefs, t, 0, 0);
         try std.testing.expect(lay.content_h > 100);
         try std.testing.expect(lay.n > 0);
     }

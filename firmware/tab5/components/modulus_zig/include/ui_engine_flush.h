@@ -44,6 +44,11 @@ esp_err_t modulus_ui_engine_flush_rows(uint16_t y0, uint16_t y1);
 /** Dual-FB: make the current back the scanned buffer; advance back pointer. */
 esp_err_t modulus_ui_engine_flush_flip(void);
 
+/** Take over the DPI refresh-done callback so flip waits for vsync.
+ *  Call ONLY after lvgl_port_remove_disp() — it replaces esp_lvgl_port's
+ *  callbacks, and an orphaned LVGL flush spins taskLVGL into a task WDT. */
+void modulus_ui_engine_flush_enable_vsync(void);
+
 uint32_t modulus_ui_engine_flush_last_px(void);
 
 #ifdef __cplusplus

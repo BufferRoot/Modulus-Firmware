@@ -36,12 +36,51 @@ static TickType_t s_scan_deadline;
 static modulus_espnow_peer_t s_scan_buf[MODULUS_ESPNOW_MAX_SCAN];
 static int s_scan_n;
 
+/* Full 2.4 GHz sweep: the S3 takes any 1-13 from its own console and cannot
+ * announce where it parked, so probing only {en_chan,1,6,11} leaves a bridge on
+ * ch3/4/5/... permanently undiscoverable. 13 x 250 ms fits inside the window. */
+#define MODULUS_ESPNOW_CHANNEL_MAX 13
+#define ESPNOW_SCAN_WINDOW_MS 5000
+#define ESPNOW_SCAN_DWELL_MS  250
+
+/* Channel the sweep is probing right now (0 = use configured en_chan). */
+static uint8_t s_scan_probe_ch;
+
+/* RAM mirror of en_chan — never read NVS from SDIO RX / espnow_stack_evt (lock abort). */
+static uint8_t s_bridge_ch_cached;
+
+static uint8_t espnow_channel_from_nvs(void)
+{
+    uint8_t ch = (uint8_t)(modulus_nvs_get_u8("en_chan", 0) + 1);
+    if (ch < 1 || ch > MODULUS_ESPNOW_CHANNEL_MAX) {
+        ch = 1;
+    }
+    return ch;
+}
+
+void modulus_wireless_espnow_channel_reload(void)
+{
+    s_bridge_ch_cached = espnow_channel_from_nvs();
+}
+
+void modulus_wireless_espnow_set_channel(uint8_t channel)
+{
+    if (channel < 1 || channel > MODULUS_ESPNOW_CHANNEL_MAX) {
+        return;
+    }
+    s_bridge_ch_cached = channel;
+    modulus_nvs_set_u8("en_chan", (uint8_t)(channel - 1));
+}
+
 static SemaphoreHandle_t s_peer_sem;
 static volatile bool s_peer_wait_ok;
 static volatile bool s_peer_wait_armed;
 
 static bool espnow_add_peer_wait(const uint8_t mac[6], uint8_t ch, bool encrypt, uint32_t timeout_ms);
+static bool espnow_ping_locate_peer(const uint8_t peer[6], uint8_t *found_ch);
 
+static bool espnow_apply_bridge_peer_ex(bool locate_if_dark);
+/** Configured channel only — safe for boot / SDIO (no channel sweep). */
 static bool espnow_apply_bridge_peer(void);
 static void schedule_bridge_reapply(void);
 static void espnow_scan_stop(void);
@@ -63,6 +102,30 @@ void modulus_wireless_espnow_align_channel(uint8_t ch)
      * that race ESP-NOW TX on the same SDIO bus and cause reason=0x01. */
 }
 
+static bool espnow_radio_usable(void)
+{
+    return modulus_wireless_ready() && modulus_wireless_transport_up() &&
+           modulus_wireless_wifi_sta_running();
+}
+
+void modulus_wireless_espnow_on_wifi_stop(void)
+{
+    bool finish = false;
+    taskENTER_CRITICAL(&s_en_mux);
+    if (s_scan_active && !s_scan_done) {
+        strncpy(s_scan_err, "WiFi stopped", sizeof(s_scan_err) - 1);
+        s_scan_err[sizeof(s_scan_err) - 1] = '\0';
+        s_scan_done = true;
+        s_scan_active = false;
+        finish = true;
+    }
+    taskEXIT_CRITICAL(&s_en_mux);
+    if (finish) {
+        espnow_scan_stop();
+    }
+    s_bridge_ok = false;
+}
+
 static bool mac_is_broadcast(const uint8_t mac[6])
 {
     for (int i = 0; i < 6; i++) {
@@ -71,6 +134,14 @@ static bool mac_is_broadcast(const uint8_t mac[6])
         }
     }
     return true;
+}
+
+static bool espnow_bridge_mac_configured(void)
+{
+    char mac_str[20];
+    uint8_t mac[6];
+    modulus_wireless_espnow_peer_mac_str(mac_str, sizeof(mac_str));
+    return modulus_wireless_espnow_parse_mac(mac_str, mac) && !mac_is_broadcast(mac);
 }
 
 static bool espnow_cnc_transport_selected(void)
@@ -82,6 +153,16 @@ static void espnow_sync_cnc_transport(void)
 {
     if (!s_espnow_on || !espnow_cnc_transport_selected()) {
         return;
+    }
+    if (!modulus_wireless_espnow_bridge_ready()) {
+        if (!espnow_bridge_mac_configured()) {
+            modulus_espnow_debug_event("sync", "no bridge MAC — skip transport open");
+            return;
+        }
+        if (!espnow_apply_bridge_peer()) {
+            modulus_espnow_debug_event("sync", "bridge dark — skip transport open");
+            return;
+        }
     }
     /* Always full Zig reinit (Core 0 worker). Reapply-only left half-open
      * transports: Session stuck on Connecting after reboot / peer reselect. */
@@ -106,7 +187,8 @@ bool modulus_wireless_espnow_commit_peer_mac(const char *mac_str, bool sync_tran
     char norm[18];
     modulus_wireless_espnow_format_mac(mac, norm, sizeof(norm));
     modulus_nvs_set_str("en_mac", norm);
-    saved_add(norm);
+    /* Do NOT saved_add here — transport restart / radio toggle used to resurrect
+     * peers after Remove. Explicit save paths call set_peer_mac / saved_add. */
     if (s_espnow_on) {
         (void)espnow_apply_bridge_peer();
         if (sync_transport) {
@@ -141,9 +223,109 @@ void modulus_wireless_espnow_format_mac(const uint8_t mac[6], char *buf, size_t 
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
+static bool s_scan_radio_held;
+
+static void espnow_scan_finish_radio(void)
+{
+    if (!s_scan_radio_held) {
+        return;
+    }
+    s_scan_radio_held = false;
+    if (modulus_espnow_stack_scan_supported()) {
+        modulus_espnow_stack_scan_end();
+    }
+    modulus_wireless_radio_op_give();
+}
+
+static uint8_t s_applied_mac[6];
+static uint8_t s_applied_ch;
+static bool s_applied_valid;
+
+void modulus_wireless_espnow_check_channel_conflict(void)
+{
+    if (!modulus_wireless_wifi_is_connected()) {
+        return;
+    }
+    wifi_ap_record_t ap = {};
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK || ap.primary < 1 || ap.primary > 13) {
+        return;
+    }
+    const uint8_t bridge_ch = modulus_wireless_espnow_channel();
+    if (ap.primary == bridge_ch) {
+        return;
+    }
+    /* This used to overwrite en_chan with the AP channel. That is unrecoverable:
+     * the S3 bridge takes a channel only from its own USB console ("channel N")
+     * and has no over-the-air handoff, so it can never follow us — and en_chan
+     * is the only record of where the bridge actually lives. Persisting the AP
+     * channel destroyed it for good (NVS survives reboot) and every unicast
+     * then died with reason=0x01. One radio cannot serve two channels; say so
+     * and leave the bridge channel alone. */
+    static uint8_t s_warned_ap_ch;
+    if (s_warned_ap_ch != ap.primary) {
+        s_warned_ap_ch = ap.primary;
+        ESP_LOGW(TAG, "Wi-Fi AP is ch%u but ESP-NOW bridge is ch%u — one radio "
+                      "cannot serve both. Set the S3 to ch%u (console 'channel %u') "
+                      "or join an AP on ch%u.",
+                 (unsigned)ap.primary, (unsigned)bridge_ch,
+                 (unsigned)ap.primary, (unsigned)ap.primary, (unsigned)bridge_ch);
+    }
+    modulus_espnow_debug_event("chan", "AP ch%u != bridge ch%u",
+                               (unsigned)ap.primary, (unsigned)bridge_ch);
+}
+
 uint8_t modulus_wireless_espnow_channel(void)
 {
-    return (uint8_t)(modulus_nvs_get_u8("en_chan", 0) + 1);
+    if (s_bridge_ch_cached < 1 || s_bridge_ch_cached > MODULUS_ESPNOW_CHANNEL_MAX) {
+        s_bridge_ch_cached = espnow_channel_from_nvs();
+    }
+    return s_bridge_ch_cached;
+}
+
+/* Bridge channel candidates, best-first: configured, then S3 default (ch1),
+ * then the rest. Shared by discovery sweep and ping-locate. */
+static int espnow_channel_candidates(uint8_t *out, int cap)
+{
+    int n = 0;
+    const uint8_t cfg = modulus_wireless_espnow_channel();
+    if (cfg >= 1 && cfg <= MODULUS_ESPNOW_CHANNEL_MAX && n < cap) {
+        out[n++] = cfg;
+    }
+    if (n < cap) {
+        bool dup = false;
+        for (int j = 0; j < n; j++) {
+            if (out[j] == 1) {
+                dup = true;
+                break;
+            }
+        }
+        if (!dup) {
+            out[n++] = 1;
+        }
+    }
+    static const uint8_t k_order[] = {6, 11, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13};
+    for (unsigned i = 0; i < sizeof(k_order) && n < cap; i++) {
+        bool dup = false;
+        for (int j = 0; j < n; j++) {
+            if (out[j] == k_order[i]) {
+                dup = true;
+                break;
+            }
+        }
+        if (!dup) {
+            out[n++] = k_order[i];
+        }
+    }
+    return n;
+}
+
+static bool espnow_verify_peer_air(const uint8_t mac[6], uint8_t ch)
+{
+    static const uint8_t k_probe[] = "MOD_PROBE";
+    if (!espnow_add_peer_wait(mac, ch, false, 600)) {
+        return false;
+    }
+    return modulus_espnow_stack_send_discovery(mac, k_probe, sizeof(k_probe) - 1);
 }
 
 static void scan_note_peer(const uint8_t mac[6], int8_t rssi)
@@ -151,9 +333,14 @@ static void scan_note_peer(const uint8_t mac[6], int8_t rssi)
     if (!mac || mac_is_broadcast(mac)) {
         return;
     }
+    /* NVS/mutex before critical — sdio_process_rx must not lock inside s_en_mux. */
+    const uint8_t note_ch = s_scan_probe_ch ? s_scan_probe_ch : modulus_wireless_espnow_channel();
     taskENTER_CRITICAL(&s_en_mux);
     for (int i = 0; i < s_scan_n; i++) {
         if (memcmp(s_scan_buf[i].mac_bytes, mac, 6) == 0) {
+            if (note_ch >= 1 && note_ch <= 13) {
+                s_scan_buf[i].channel = note_ch;
+            }
             if (rssi > s_scan_buf[i].rssi) {
                 s_scan_buf[i].rssi = rssi;
             }
@@ -166,7 +353,7 @@ static void scan_note_peer(const uint8_t mac[6], int8_t rssi)
         memcpy(p->mac_bytes, mac, 6);
         modulus_wireless_espnow_format_mac(mac, p->mac, sizeof(p->mac));
         p->rssi = rssi;
-        p->channel = modulus_wireless_espnow_channel();
+        p->channel = note_ch;
     }
     taskEXIT_CRITICAL(&s_en_mux);
 }
@@ -246,17 +433,19 @@ static void espnow_stack_evt(uint8_t evt, const uint8_t *payload, uint16_t len, 
             snprintf(s_scan_err, sizeof(s_scan_err), "Init fail %u", (unsigned)payload[0]);
             s_scan_done = true;
             s_scan_active = false;
+            espnow_scan_finish_radio();
         }
         break;
     case ESPNOW_EVT_PROBE_FAIL:
+        /* Probe kick failed — keep listening until deadline so UI shows Scanning
+         * and late DISCOVER frames still count. */
         if (s_scan_active) {
             if (payload && len >= 1) {
-                snprintf(s_scan_err, sizeof(s_scan_err), "Probe fail %u", (unsigned)payload[0]);
+                modulus_espnow_debug_event("scan", "probe fail err=%u (window open)",
+                                           (unsigned)payload[0]);
             } else {
-                strncpy(s_scan_err, "Probe fail", sizeof(s_scan_err) - 1);
+                modulus_espnow_debug_event("scan", "probe fail (window open)");
             }
-            s_scan_done = true;
-            s_scan_active = false;
         }
         break;
     default:
@@ -285,11 +474,29 @@ static bool espnow_add_peer_wait(const uint8_t mac[6], uint8_t ch, bool encrypt,
     return got && s_peer_wait_ok;
 }
 
-static bool espnow_apply_bridge_peer(void)
+static bool espnow_apply_bridge_peer_ex(bool locate_if_dark)
 {
+    if (!espnow_radio_usable()) {
+        s_bridge_ok = false;
+        return false;
+    }
+    if (!espnow_bridge_mac_configured()) {
+        s_bridge_ok = false;
+        s_applied_valid = false;
+        return false;
+    }
+
     uint8_t mac[6];
     char mac_str[20];
-    const uint8_t ch = modulus_wireless_espnow_channel();
+    uint8_t ch = modulus_wireless_espnow_channel();
+    const bool encrypt = modulus_nvs_get_u8("en_enc", 0) != 0;
+
+    modulus_wireless_espnow_peer_mac_str(mac_str, sizeof(mac_str));
+    if (!modulus_wireless_espnow_parse_mac(mac_str, mac) || mac_is_broadcast(mac)) {
+        s_bridge_ok = false;
+        s_applied_valid = false;
+        return false;
+    }
 
     modulus_espnow_stack_register();
     if (!modulus_espnow_stack_inited()) {
@@ -300,26 +507,50 @@ static bool espnow_apply_bridge_peer(void)
         }
     }
 
-    modulus_wireless_espnow_peer_mac_str(mac_str, sizeof(mac_str));
-    if (!modulus_wireless_espnow_parse_mac(mac_str, mac) || mac_is_broadcast(mac)) {
+    if (s_bridge_ok && s_applied_valid && s_applied_ch == ch &&
+        memcmp(s_applied_mac, mac, 6) == 0) {
+        if (!locate_if_dark || espnow_verify_peer_air(mac, ch)) {
+            return true;
+        }
+        s_applied_valid = false;
         s_bridge_ok = false;
-        modulus_espnow_debug_event("bridge", "no bridge MAC — scan or enter S3 MAC");
-        ESP_LOGW(TAG, "Bridge MAC unset — Settings > Wireless > ESP-NOW scan or enter S3 MAC");
-        return false;
     }
 
     modulus_espnow_debug_event("bridge", "apply peer %s ch%u", mac_str, (unsigned)ch);
 
     s_bridge_ok = false;
-    /* Saved channel + MAC: short peer ACK wait (was 1500 ms). */
-    if (!espnow_add_peer_wait(mac, ch, false, 600)) {
-        modulus_espnow_debug_event("bridge", "add_peer timeout/fail");
-        ESP_LOGW(TAG, "C6 add_peer failed for %s ch%u", mac_str, (unsigned)ch);
+    uint8_t live_ch = ch;
+
+    if (!locate_if_dark) {
+        /* LVGL hal_wireless::espnow::enable — add_peer on configured channel only. */
+        if (!espnow_add_peer_wait(mac, ch, encrypt, 600)) {
+            return false;
+        }
+        ESP_LOGI(TAG, "Bridge peer %s ch%u (added)", mac_str, (unsigned)ch);
+    } else if (!espnow_verify_peer_air(mac, ch) &&
+               !espnow_ping_locate_peer(mac, &live_ch)) {
+        modulus_espnow_debug_event("bridge", "peer dark on all channels");
+        ESP_LOGW(TAG, "Bridge %s not reachable (check S3 power + channel)", mac_str);
         return false;
+    } else if (live_ch != ch && live_ch >= 1 && live_ch <= 13) {
+        ch = live_ch;
+        modulus_wireless_espnow_set_channel(ch);
+        ESP_LOGI(TAG, "Bridge peer %s ch%u (located)", mac_str, (unsigned)ch);
+    } else {
+        ESP_LOGI(TAG, "Bridge peer %s ch%u", mac_str, (unsigned)ch);
     }
-    ESP_LOGI(TAG, "Bridge peer %s ch%u", mac_str, (unsigned)ch);
+
     modulus_espnow_debug_event("bridge", "peer ready");
+    memcpy(s_applied_mac, mac, 6);
+    s_applied_ch = ch;
+    s_applied_valid = true;
+    s_bridge_ok = true;
     return true;
+}
+
+static bool espnow_apply_bridge_peer(void)
+{
+    return espnow_apply_bridge_peer_ex(false);
 }
 
 void modulus_wireless_espnow_apply_bridge_peer(void)
@@ -335,33 +566,45 @@ static void espnow_scan_stop(void)
     taskENTER_CRITICAL(&s_en_mux);
     s_scan_active = false;
     taskEXIT_CRITICAL(&s_en_mux);
+    espnow_scan_finish_radio();
 }
 
 bool modulus_wireless_espnow_enable(void)
 {
-    if (!modulus_wireless_ready() || !modulus_wireless_ensure_wifi_stack()) {
-        /* Match LVGL toggle: wake C6 then retry wifi stack (P4-only reboot common). */
-        if (!modulus_wireless_wake_coprocessor() ||
-            !modulus_wireless_ready() ||
-            !modulus_wireless_ensure_wifi_stack()) {
-            modulus_espnow_debug_event("radio", "enable fail (wifi stack)");
-            return false;
+    if (s_espnow_on) {
+        if (espnow_bridge_mac_configured()) {
+            schedule_bridge_reapply();
         }
+        return true;
+    }
+    /* LVGL hal_wireless::espnow::enable — init stack + ESPNOW_CMD_INIT, no wake. */
+    modulus_wireless_espnow_channel_reload();
+    if (!modulus_wireless_ready() && !modulus_wireless_init()) {
+        modulus_espnow_debug_event("radio", "enable fail (wireless init)");
+        return false;
+    }
+    if (!modulus_wireless_ensure_wifi_stack()) {
+        modulus_espnow_debug_event("radio", "enable fail (wifi stack)");
+        return false;
+    }
+    modulus_espnow_stack_register();
+    modulus_espnow_stack_set_evt_hook(espnow_stack_evt, NULL);
+    modulus_wireless_espnow_check_channel_conflict();
+    if (!modulus_espnow_stack_ensure_inited(MODULUS_ESPNOW_INIT_WAIT_MS)) {
+        modulus_espnow_debug_event("radio", "enable fail (C6 ESP-NOW init)");
+        return false;
     }
     {
-        /* The bridge filters/sends to a stored Tab5 MAC. If the C6 STA MAC here
-         * does not match what the bridge has, the link is one-way at best. */
         uint8_t c6mac[6] = {0};
         esp_err_t merr = esp_wifi_get_mac(WIFI_IF_STA, c6mac);
         ESP_LOGI(TAG, "C6 STA MAC %02X:%02X:%02X:%02X:%02X:%02X (%s) - bridge must expect THIS",
                  c6mac[0], c6mac[1], c6mac[2], c6mac[3], c6mac[4], c6mac[5],
                  esp_err_to_name(merr));
     }
-    modulus_espnow_stack_register();
-    modulus_espnow_stack_set_evt_hook(espnow_stack_evt, NULL);
     s_espnow_on = true;
     modulus_nvs_set_u8("espnow", 1);
-    (void)espnow_apply_bridge_peer();
+    /* Bridge peer apply deferred to transport start / user Connect — boot
+     * add_peer + MOD_PROBE while S3 is dark wedges SDIO (0x107). */
     modulus_espnow_debug_event("radio", "enabled");
     ESP_LOGI(TAG, "ESP-NOW radio enabled");
     return true;
@@ -378,6 +621,7 @@ void modulus_wireless_espnow_disable(void)
     espnow_scan_stop();
     s_espnow_on = false;
     s_bridge_ok = false;
+    s_applied_valid = false;
     modulus_nvs_set_u8("espnow", 0);
     taskENTER_CRITICAL(&s_en_mux);
     s_scan_active = false;
@@ -517,8 +761,8 @@ bool modulus_wireless_espnow_delete_saved(int idx)
     saved_key(n - 1, last_key, sizeof(last_key));
     modulus_nvs_set_str(last_key, "");
     modulus_nvs_set_u8("en_pn", (uint8_t)(n - 1));
-    /* If the deleted saved entry was active, drop C6 peer only — keep en_mac so
-     * the user can re-save or scan without losing the bridge target. */
+    /* Remove must stick: clear bridge MAC if this was the active peer, otherwise
+     * radio/transport restart re-seeded the saved list from en_mac. */
     char active[20];
     modulus_wireless_espnow_peer_mac_str(active, sizeof(active));
     if (target[0] && strcmp(active, target) == 0) {
@@ -526,14 +770,30 @@ bool modulus_wireless_espnow_delete_saved(int idx)
         if (modulus_wireless_espnow_parse_mac(target, raw)) {
             (void)modulus_espnow_stack_del_peer(raw);
         }
+        modulus_nvs_set_str("en_mac", "FF:FF:FF:FF:FF:FF");
         s_bridge_ok = false;
+        modulus_espnow_transport_stop();
     }
     return true;
 }
 
 bool modulus_wireless_espnow_set_peer_mac(const char *mac_str)
 {
-    return modulus_wireless_espnow_commit_peer_mac(mac_str, true);
+    /* User-facing save (scan tap / Activate / Add MAC) — persist into saved list. */
+    if (!mac_str || !mac_str[0]) {
+        return false;
+    }
+    uint8_t mac[6];
+    if (!modulus_wireless_espnow_parse_mac(mac_str, mac) || mac_is_broadcast(mac)) {
+        return false;
+    }
+    char norm[18];
+    modulus_wireless_espnow_format_mac(mac, norm, sizeof(norm));
+    if (!modulus_wireless_espnow_commit_peer_mac(norm, true)) {
+        return false;
+    }
+    saved_add(norm);
+    return true;
 }
 
 uint32_t modulus_wireless_espnow_tx_count(void)
@@ -622,48 +882,58 @@ bool modulus_wireless_espnow_scan_failed(void)
     return failed;
 }
 
-bool modulus_wireless_espnow_scan_start(void)
+static void espnow_scan_worker(void *arg)
 {
+    (void)arg;
+    modulus_wireless_espnow_check_channel_conflict();
+    const uint8_t ch = modulus_wireless_espnow_channel();
+
     if (!s_espnow_on) {
-        return false;
-    }
-    if (modulus_espnow_transport_is_open()) {
         taskENTER_CRITICAL(&s_en_mux);
-        strncpy(s_scan_err, "Disconnect CNC first", sizeof(s_scan_err) - 1);
+        strncpy(s_scan_err, "Radio off", sizeof(s_scan_err) - 1);
+        s_scan_active = false;
+        s_scan_done = true;
+        taskEXIT_CRITICAL(&s_en_mux);
+        espnow_scan_finish_radio();
+        vTaskDelete(NULL);
+        return;
+    }
+
+    if (!espnow_radio_usable()) {
+        taskENTER_CRITICAL(&s_en_mux);
+        strncpy(s_scan_err, "WiFi stopped", sizeof(s_scan_err) - 1);
         s_scan_err[sizeof(s_scan_err) - 1] = '\0';
         s_scan_active = false;
         s_scan_done = true;
         taskEXIT_CRITICAL(&s_en_mux);
-        return false;
+        espnow_scan_finish_radio();
+        vTaskDelete(NULL);
+        return;
     }
+
     if (!modulus_wireless_ensure_wifi_stack()) {
         taskENTER_CRITICAL(&s_en_mux);
         strncpy(s_scan_err, "WiFi stack down", sizeof(s_scan_err) - 1);
-        s_scan_done = true;
         s_scan_active = false;
+        s_scan_done = true;
         taskEXIT_CRITICAL(&s_en_mux);
-        return false;
+        espnow_scan_finish_radio();
+        vTaskDelete(NULL);
+        return;
     }
-    taskENTER_CRITICAL(&s_en_mux);
-    s_scan_active = true;
-    s_scan_done = false;
-    s_scan_n = 0;
-    s_scan_err[0] = '\0';
-    s_scan_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(3500);
-    taskEXIT_CRITICAL(&s_en_mux);
 
     tab5_pi4ioe_wait_c6_sdio_ready();
 
-    const uint8_t ch = modulus_wireless_espnow_channel();
     if (ch < 1 || ch > 13) {
         taskENTER_CRITICAL(&s_en_mux);
         strncpy(s_scan_err, "Invalid channel", sizeof(s_scan_err) - 1);
         s_scan_active = false;
         s_scan_done = true;
         taskEXIT_CRITICAL(&s_en_mux);
-        return false;
+        espnow_scan_finish_radio();
+        vTaskDelete(NULL);
+        return;
     }
-    /* Channel owned by C6 probe handler — avoid host esp_wifi_set_channel RPC. */
 
     if (!modulus_espnow_stack_ensure_inited(MODULUS_ESPNOW_INIT_WAIT_MS)) {
         taskENTER_CRITICAL(&s_en_mux);
@@ -677,16 +947,126 @@ bool modulus_wireless_espnow_scan_start(void)
         s_scan_active = false;
         s_scan_done = true;
         taskEXIT_CRITICAL(&s_en_mux);
+        espnow_scan_finish_radio();
+        vTaskDelete(NULL);
+        return;
+    }
+
+    if (modulus_espnow_stack_scan_supported()) {
+        (void)modulus_espnow_stack_scan_begin(ESPNOW_SCAN_WINDOW_MS);
+    }
+
+    /* A single-channel probe misses any bridge parked elsewhere. Sweep the whole
+     * band when no STA link owns the PHY; hopping while associated would drop
+     * the AP, so then we can only probe the channel the radio is already on. */
+    uint8_t sweep[MODULUS_ESPNOW_CHANNEL_MAX];
+    int sweep_n = 1;
+    sweep[0] = ch;
+    if (!modulus_wireless_wifi_is_connected()) {
+        sweep_n = espnow_channel_candidates(sweep, (int)sizeof(sweep));
+    }
+
+    for (int i = 0; i < sweep_n; i++) {
+        s_scan_probe_ch = sweep[i];
+        modulus_espnow_debug_event("scan", "probe ch%u (%d/%d)", (unsigned)sweep[i], i + 1,
+                                   sweep_n);
+        /* Probe kick is best-effort — window stays open until poll_scan deadline. */
+        if (!modulus_espnow_stack_probe(sweep[i])) {
+            modulus_espnow_debug_event("scan", "probe ch%u send fail", (unsigned)sweep[i]);
+        }
+        vTaskDelay(pdMS_TO_TICKS(ESPNOW_SCAN_DWELL_MS));
+    }
+
+    s_scan_probe_ch = 0;
+    /* Do not snap back to stale en_chan after the sweep found the bridge elsewhere. */
+    uint8_t lock_ch = ch;
+    uint8_t bridge_mac[6];
+    char mac_str[20];
+    modulus_wireless_espnow_peer_mac_str(mac_str, sizeof(mac_str));
+    if (modulus_wireless_espnow_parse_mac(mac_str, bridge_mac) &&
+        !mac_is_broadcast(bridge_mac)) {
+        taskENTER_CRITICAL(&s_en_mux);
+        int8_t best_rssi = -128;
+        for (int i = 0; i < s_scan_n; i++) {
+            if (memcmp(s_scan_buf[i].mac_bytes, bridge_mac, 6) != 0) {
+                continue;
+            }
+            if (s_scan_buf[i].channel >= 1 && s_scan_buf[i].channel <= 13 &&
+                s_scan_buf[i].rssi >= best_rssi) {
+                best_rssi = s_scan_buf[i].rssi;
+                lock_ch = s_scan_buf[i].channel;
+            }
+        }
+        taskEXIT_CRITICAL(&s_en_mux);
+        if (lock_ch != ch && lock_ch >= 1 && lock_ch <= 13) {
+            modulus_wireless_espnow_set_channel(lock_ch);
+            s_applied_valid = false;
+            s_bridge_ok = false;
+            ESP_LOGI(TAG, "ESP-NOW channel follows scan hit ch%u", (unsigned)lock_ch);
+        }
+    }
+    if (sweep_n > 1 || lock_ch != ch) {
+        (void)modulus_espnow_stack_lock_channel(lock_ch);
+    }
+    vTaskDelete(NULL);
+}
+
+bool modulus_wireless_espnow_scan_start(void)
+{
+    if (!s_espnow_on) {
+        return false;
+    }
+    if (!espnow_radio_usable()) {
+        taskENTER_CRITICAL(&s_en_mux);
+        strncpy(s_scan_err, "WiFi stopped", sizeof(s_scan_err) - 1);
+        s_scan_err[sizeof(s_scan_err) - 1] = '\0';
+        s_scan_active = false;
+        s_scan_done = true;
+        taskEXIT_CRITICAL(&s_en_mux);
+        return false;
+    }
+    if (modulus_espnow_transport_is_open()) {
+        taskENTER_CRITICAL(&s_en_mux);
+        strncpy(s_scan_err, "Disconnect CNC first", sizeof(s_scan_err) - 1);
+        s_scan_err[sizeof(s_scan_err) - 1] = '\0';
+        s_scan_active = false;
+        s_scan_done = true;
+        taskEXIT_CRITICAL(&s_en_mux);
         return false;
     }
 
-    modulus_espnow_debug_event("scan", "probe ch%u", (unsigned)ch);
-    if (!modulus_espnow_stack_probe(ch)) {
+    taskENTER_CRITICAL(&s_en_mux);
+    if (s_scan_active && !s_scan_done) {
+        taskEXIT_CRITICAL(&s_en_mux);
+        return true; /* already scanning */
+    }
+    s_scan_active = true;
+    s_scan_done = false;
+    s_scan_n = 0;
+    s_scan_err[0] = '\0';
+    /* Must outlast the full 13-channel sweep (13 x ESPNOW_SCAN_DWELL_MS). */
+    s_scan_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(ESPNOW_SCAN_WINDOW_MS);
+    taskEXIT_CRITICAL(&s_en_mux);
+
+    if (!modulus_wireless_radio_op_try_take(0)) {
         taskENTER_CRITICAL(&s_en_mux);
-        strncpy(s_scan_err, "Probe send fail", sizeof(s_scan_err) - 1);
+        strncpy(s_scan_err, "Radio busy", sizeof(s_scan_err) - 1);
+        s_scan_err[sizeof(s_scan_err) - 1] = '\0';
+        s_scan_active = false;
         s_scan_done = true;
         taskEXIT_CRITICAL(&s_en_mux);
-        espnow_scan_stop();
+        return false;
+    }
+    s_scan_radio_held = true;
+
+    /* Off UI thread: ensure_inited / probe can block >1 s. */
+    if (xTaskCreate(espnow_scan_worker, "en_scan", 4096, NULL, 5, NULL) != pdPASS) {
+        taskENTER_CRITICAL(&s_en_mux);
+        strncpy(s_scan_err, "Scan worker fail", sizeof(s_scan_err) - 1);
+        s_scan_active = false;
+        s_scan_done = true;
+        taskEXIT_CRITICAL(&s_en_mux);
+        espnow_scan_finish_radio();
         return false;
     }
     return true;
@@ -695,6 +1075,9 @@ bool modulus_wireless_espnow_scan_start(void)
 bool modulus_wireless_espnow_scan_done(void)
 {
     taskENTER_CRITICAL(&s_en_mux);
+    /* Idle (!active) counts as done for LVGL button state; while active,
+     * only s_scan_done ends the window. Async start sets active before return
+     * so a same-frame poll cannot false-complete. */
     const bool v = s_scan_done || !s_scan_active;
     taskEXIT_CRITICAL(&s_en_mux);
     return v;
@@ -729,6 +1112,18 @@ bool modulus_wireless_espnow_select_scan_peer(int idx)
     if (!modulus_wireless_espnow_scan_get(idx, &peer)) {
         return false;
     }
+    /* A peer found mid-sweep lives off the configured channel — follow it, or the
+     * saved MAC is unreachable. A STA link owns the PHY channel, so skip then. */
+    if (peer.channel >= 1 && peer.channel <= 13 && !modulus_wireless_wifi_is_connected()) {
+        if (modulus_wireless_espnow_channel() != peer.channel) {
+            modulus_wireless_espnow_set_channel(peer.channel);
+            s_applied_valid = false;
+            s_bridge_ok = false;
+            (void)modulus_espnow_stack_lock_channel(peer.channel);
+            ESP_LOGI(TAG, "ESP-NOW channel follows discovered peer ch%u",
+                     (unsigned)peer.channel);
+        }
+    }
     return modulus_wireless_espnow_set_peer_mac(peer.mac);
 }
 
@@ -748,8 +1143,8 @@ bool modulus_wireless_espnow_remove_bridge_peer(void)
 
 void modulus_wireless_espnow_clear_peers(void)
 {
-    /* Drop saved-peer list and scan results; keep bridge MAC (en_mac) so CNC
-     * transport is not wiped by an advanced-menu housekeeping action. */
+    /* Drop saved list + bridge MAC — otherwise en_mac re-seeds the list on
+     * radio/transport restart (Remove/Clear looked temporary). */
     const int n = saved_count_raw();
     for (int i = 0; i < n; i++) {
         char key[8];
@@ -757,6 +1152,7 @@ void modulus_wireless_espnow_clear_peers(void)
         modulus_nvs_set_str(key, "");
     }
     modulus_nvs_set_u8("en_pn", 0);
+    (void)modulus_wireless_espnow_remove_bridge_peer();
     uint8_t bcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     (void)modulus_espnow_stack_del_peer(bcast);
     taskENTER_CRITICAL(&s_en_mux);
@@ -770,6 +1166,10 @@ void modulus_wireless_espnow_clear_peers(void)
 void modulus_wireless_espnow_poll_scan(void)
 {
     if (!s_espnow_on) {
+        return;
+    }
+    if (!espnow_radio_usable()) {
+        modulus_wireless_espnow_on_wifi_stop();
         return;
     }
     taskENTER_CRITICAL(&s_en_mux);
@@ -792,6 +1192,9 @@ void modulus_wireless_espnow_transport_reinit(void)
     if (!s_espnow_on) {
         return;
     }
+    if (!espnow_radio_usable()) {
+        return;
+    }
     modulus_espnow_debug_event("reinit", "espnow transport reinit");
     if (!modulus_c6_sdio_ready()) {
         modulus_espnow_debug_event("reinit", "SDIO down — skip peer apply");
@@ -800,7 +1203,9 @@ void modulus_wireless_espnow_transport_reinit(void)
         }
         return;
     }
-    (void)espnow_apply_bridge_peer();
+    if (!s_bridge_ok && espnow_bridge_mac_configured()) {
+        (void)espnow_apply_bridge_peer();
+    }
     if (modulus_espnow_transport_is_open() && modulus_c6_sdio_ready()) {
         modulus_espnow_debug_event("sync", "transport live — peer refreshed");
         return;
@@ -835,18 +1240,59 @@ const char *modulus_wireless_espnow_debug_last_event(void)
 
 static bool boot_reconnect_wanted(void)
 {
+    if (!espnow_bridge_mac_configured()) {
+        return false;
+    }
     if (modulus_nvs_get_u8("espnow", 0) != 0) {
         return true;
     }
-    if (modulus_nvs_get_u8("cnc_conn", 4) != 0) {
-        return false;
+    return modulus_nvs_get_u8("cnc_conn", 4) == 0;
+}
+
+/* en_chan drifts (manual change, bridge reconfigured) and a saved peer only
+ * answers on its own channel, so a failed probe means "wrong channel" at least
+ * as often as it means "absent". Retry across the channels before declaring the
+ * bridge dark. Returns the channel that answered. */
+static bool espnow_ping_locate_peer(const uint8_t peer[6], uint8_t *found_ch)
+{
+    /* MOD_PROBE, not a private "MOD_PING": the S3 only special-cases PROBE /
+     * HALT and forwards every other payload straight to grblHAL, so a bespoke
+     * liveness word gets injected into the CNC serial stream as garbage. PROBE
+     * also makes the bridge re-learn our MAC, which the S3->Tab5 path needs. */
+    static const uint8_t k_probe[] = "MOD_PROBE";
+    uint8_t sweep[MODULUS_ESPNOW_CHANNEL_MAX];
+    int n = 1;
+    sweep[0] = modulus_wireless_espnow_channel();
+    if (!modulus_wireless_wifi_is_connected()) {
+        n = espnow_channel_candidates(sweep, (int)sizeof(sweep));
+        /* ponytail: 13-ch sweep when S3 is dark hammers SDIO → 0x107 / Core abort */
+        if (n > 2) {
+            n = 2;
+        }
     }
-    char mac[20];
-    if (modulus_nvs_get_str("en_mac", mac, sizeof(mac)) && mac[0] &&
-        strcmp(mac, "FF:FF:FF:FF:FF:FF") != 0) {
-        return true;
+    int dark_streak = 0;
+    for (int i = 0; i < n; i++) {
+        if (!modulus_c6_sdio_ready() || !modulus_wireless_transport_up()) {
+            ESP_LOGW(TAG, "SDIO down — abort ESP-NOW channel locate");
+            return false;
+        }
+        if (!espnow_add_peer_wait(peer, sweep[i], false, 600)) {
+            continue;
+        }
+        if (modulus_espnow_stack_send_discovery(peer, k_probe, sizeof(k_probe) - 1)) {
+            *found_ch = sweep[i];
+            return true;
+        }
+        if (modulus_espnow_stack_last_send_fail_reason() == 0x01) {
+            if (++dark_streak >= 2) {
+                return false;
+            }
+        } else {
+            dark_streak = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
-    return modulus_wireless_espnow_saved_count() > 0;
+    return false;
 }
 
 static bool boot_reconnect_once(const char *phase)
@@ -855,35 +1301,27 @@ static bool boot_reconnect_once(const char *phase)
         modulus_espnow_debug_event("boot", "skip (%s): no saved peer/radio", phase);
         return true;
     }
+    if (!espnow_radio_usable()) {
+        modulus_espnow_debug_event("boot", "reconnect (%s): WiFi/SDIO down", phase);
+        return false;
+    }
     if (!modulus_wireless_espnow_is_enabled()) {
         if (!modulus_wireless_espnow_enable()) {
             modulus_espnow_debug_event("boot", "reconnect (%s): radio not ready", phase);
             return false;
         }
-    } else {
-        modulus_wireless_espnow_apply_bridge_peer();
     }
-    if (modulus_nvs_get_u8("cnc_conn", 4) == 0) {
-        if (!modulus_espnow_transport_is_open()) {
-            modulus_espnow_debug_event("boot", "reconnect (%s): transport reinit", phase);
-            espnow_sync_cnc_transport();
-            return false;
-        }
-        /* Transport open is enough — do not require bridge_ok here or retries
-         * thrash stop/reinit while peer handshake finishes. */
-        return true;
-    }
-    return modulus_wireless_espnow_bridge_ready() ||
-           modulus_wireless_espnow_is_enabled();
+    /* Radio + C6 ESP-NOW INIT only — peer add / transport open on user Connect. */
+    modulus_espnow_debug_event("boot", "reconnect (%s): radio up, peer deferred", phase);
+    return true;
 }
 
-/* Fast reconnect after PEER_FAIL / SEND_FAIL — avoid 2 s boot cadence. */
+/* Slow cadence — probe is enough; avoid thrashing reinit. */
 
 static void deferred_boot_reconnect_task(void *arg)
 {
     (void)arg;
-    /* Front-load: 250 ms, then 400 ms × 9 (was 2 s × 8 = up to 16 s). */
-    static const uint16_t k_delays_ms[] = {250, 400, 400, 400, 400, 600, 600, 800, 800, 1000};
+    static const uint16_t k_delays_ms[] = {3000, 8000, 15000};
     for (int attempt = 0; attempt < (int)(sizeof(k_delays_ms) / sizeof(k_delays_ms[0]));
          attempt++) {
         vTaskDelay(pdMS_TO_TICKS(k_delays_ms[attempt]));
@@ -896,33 +1334,9 @@ static void deferred_boot_reconnect_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static void deferred_bridge_reapply_task(void *arg)
-{
-    (void)arg;
-    vTaskDelay(pdMS_TO_TICKS(80));
-    if (boot_reconnect_wanted() && s_espnow_on && !s_bridge_ok) {
-        modulus_espnow_debug_event("bridge", "fast reapply");
-        (void)espnow_apply_bridge_peer();
-        if (modulus_nvs_get_u8("cnc_conn", 4) == 0 && !modulus_espnow_transport_is_open()) {
-            espnow_sync_cnc_transport();
-        }
-    }
-    vTaskDelete(NULL);
-}
-
 static void schedule_bridge_reapply(void)
 {
-    static TickType_t s_last;
-    const TickType_t now = xTaskGetTickCount();
-    /* Debounce: at most one reapply every 400 ms. */
-    if ((now - s_last) < pdMS_TO_TICKS(400)) {
-        return;
-    }
-    s_last = now;
-    if (!boot_reconnect_wanted() || !s_espnow_on) {
-        return;
-    }
-    xTaskCreate(deferred_bridge_reapply_task, "espnow_re", 3072, NULL, 3, NULL);
+    /* Boot-time SDIO peer apply removed — transport_start / user Connect only. */
 }
 
 void modulus_wireless_espnow_boot_reconnect(void)

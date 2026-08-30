@@ -121,6 +121,12 @@ export fn modulus_zig_enter_deep_sleep() void {
 export fn modulus_zig_wake_from_deep_sleep() void {
     if (!boot_ok) return;
     rt.power.wake(timer_mod.nowUs());
+    // Rails may have been dropped/restored around sleep — force the next
+    // prefs flush to re-drive them instead of trusting the change cache.
+    // device_ui_bridge is freestanding-only; this file also builds for host.
+    if (comptime @import("builtin").os.tag == .freestanding) {
+        @import("device_ui_bridge.zig").invalidatePowerCache();
+    }
 }
 
 pub fn fillCncStatus(out: *device_ui_mod.CncStatus) void {

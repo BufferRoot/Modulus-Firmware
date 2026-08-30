@@ -87,6 +87,8 @@
 #define ESPNOW_CMD_LOCK_CHANNEL 0x08
 
 #define ESPNOW_CMD_SET_RATE   0x09
+#define ESPNOW_CMD_SCAN_BEGIN 0x0A /* [duration_ms:2 LE optional] */
+#define ESPNOW_CMD_SCAN_END   0x0B
 
 
 
@@ -120,6 +122,8 @@
 /* Events to host */
 
 #define ESPNOW_EVT_INIT_OK    0x81
+
+#define ESPNOW_PROTO_CAP_SCAN 0x01 /* INIT_OK payload: scan_begin/end supported */
 
 #define ESPNOW_EVT_INIT_FAIL  0x82
 

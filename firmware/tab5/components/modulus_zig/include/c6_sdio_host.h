@@ -9,6 +9,9 @@ typedef void (*modulus_c6_rx_fn)(const uint8_t *payload, uint16_t len, void *ctx
 /** True when esp_hosted SDIO TX path is up (post esp_wifi_start). */
 bool modulus_c6_sdio_ready(void);
 
+/** Block custom-IF SDIO TX for ms after 0x107 / send failure (stops write_task storms). */
+void modulus_c6_sdio_quiesce(uint32_t ms);
+
 /** Send raw payload on custom SDIO IF (ESP_ESPNOW_IF / ZIGBEE / THREAD). */
 bool modulus_c6_sdio_send(uint8_t if_type, const uint8_t *payload, uint16_t len);
 

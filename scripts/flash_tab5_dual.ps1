@@ -15,7 +15,7 @@
 #
 # C6 USB may need BOOT held during connect; power-cycle Tab5 after both flashes.
 param(
-    [string]$C6Port = "COM6",
+    [string]$C6Port = "COM18",
     [string]$P4Port = "COM5",
     [string]$IdfPath = "",
     [switch]$SkipAscii,
@@ -43,7 +43,7 @@ function Resolve-ZigExe {
 $c6BuildArgs = @{ Action = "build" }
 $c6FlashArgs = @{ Action = "flash"; Port = $C6Port }
 if ($ZigbeeExclusive) {
-    Write-Warning "ZigbeeExclusive: ZBOSS on C6 — ESP-NOW coex will suffer. Prefer NanoH2."
+    Write-Warning 'ZigbeeExclusive: ZBOSS on C6 - ESP-NOW coex will suffer. Prefer NanoH2.'
     $c6BuildArgs.ZigbeeExclusive = $true
     $c6FlashArgs.ZigbeeExclusive = $true
 }
@@ -105,12 +105,12 @@ try {
     & "$PSScriptRoot\flash_tab5.ps1" @flashArgs
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    Write-Host ""
-    Write-Host "Dual flash done. Cold-boot verify: WLAN_PWR_EN -> Card init success -> wireless_shim: Wireless ready"
+    Write-Host ''
+    Write-Host 'Dual flash done. Cold-boot verify: WLAN_PWR_EN -> Card init success -> wireless_shim: Wireless ready'
     if ($ZigbeeExclusive) {
-        Write-Host "C6 ZigbeeExclusive: early log should include ZBOSS HUB PATH compiled"
+        Write-Host 'C6 ZigbeeExclusive: early log should include ZBOSS HUB PATH compiled'
     }
-    Write-Host "If checksum mismatch in monitor: rebuild from this repo (not Modulus Firmware/) and reflash both chips."
+    Write-Host 'If checksum mismatch in monitor: rebuild from this repo (not Modulus Firmware/) and reflash both chips.'
 }
 finally {
     Pop-Location

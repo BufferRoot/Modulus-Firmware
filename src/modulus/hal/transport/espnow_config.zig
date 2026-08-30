@@ -54,9 +54,9 @@ pub fn getChannel(store: *const settings_store.Store) u8 {
     return channelFromIdx(getChannelIdx(store));
 }
 
-/// Default 24 Mbps OFDM (idx 6) — adaptive fallback on P4 drops tiers on fail.
+/// Default 11 Mbps 11b (idx 3) — matches S3 UART bridge `rate11M`.
 pub fn getRateIdx(store: *const settings_store.Store) u8 {
-    return @min(store.getU8(settings_keys.en_rate, @intFromEnum(RateIdx.rate_24m)), @intFromEnum(RateIdx.rate_mcs3));
+    return @min(store.getU8(settings_keys.en_rate, @intFromEnum(RateIdx.rate_11m)), @intFromEnum(RateIdx.rate_mcs3));
 }
 
 test "hal: espnow parse and format mac" {

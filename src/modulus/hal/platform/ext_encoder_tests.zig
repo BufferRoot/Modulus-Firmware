@@ -6,6 +6,7 @@ const settings_store = @import("../../core/settings_store.zig");
 const settings_keys = @import("../../core/settings_keys.zig");
 const i2c_coex = @import("i2c_coex.zig");
 const ext_encoder = @import("ext_encoder.zig");
+const poll_ops = @import("ext_encoder_poll_ops.zig");
 
 test "hal: ext encoder step mode jogs and queues" {
     var store = settings_store.Store.init(std.testing.allocator);
@@ -48,8 +49,36 @@ test "hal: ext encoder cancel on stop" {
     var enc: ext_encoder.ExtEncoder = .{ .coex = &coex, .jog_active = true };
     enc.init(&coex, &drv, &store);
     enc.connectMock();
-    enc.poll(20);
+    enc.jog_active = true;
+    enc.last_wheel_move_ms = 20;
+    const snap = drv.statusLocal();
+
+    poll_ops.releaseOnWheelStop(&enc, &drv, false, snap.*, 'X', @intFromEnum(snap.state), 40);
+    try std.testing.expect(enc.jog_active);
+    poll_ops.releaseOnWheelStop(&enc, &drv, false, snap.*, 'X', @intFromEnum(snap.state), 120);
     try std.testing.expect(!enc.jog_active);
+}
+
+test "hal: ext encoder stop discards stale negative step backlog" {
+    var store = settings_store.Store.init(std.testing.allocator);
+    defer store.deinit();
+    var coex: i2c_coex.I2cCoex = .{};
+    var drv = driver.Driver.init(.{ .store = &store });
+    var enc: ext_encoder.ExtEncoder = .{ .coex = &coex };
+    enc.init(&coex, &drv, &store);
+    enc.connectMock();
+    enc.jog_active = true;
+    enc.pending_steps = -12;
+    enc.pulse_remainder = -1;
+    enc.coal_start_ms = 20;
+    enc.last_wheel_move_ms = 20;
+    const snap = drv.statusLocal();
+
+    poll_ops.releaseOnWheelStop(&enc, &drv, false, snap.*, 'X', @intFromEnum(snap.state), 120);
+    try std.testing.expect(!enc.jog_active);
+    try std.testing.expectEqual(@as(i32, 0), enc.pending_steps);
+    try std.testing.expectEqual(@as(i32, 0), enc.pulse_remainder);
+    try std.testing.expectEqual(@as(u32, 0), enc.coal_start_ms);
 }
 
 test "hal: ext encoder cont mode ramp-down on stop" {
@@ -84,7 +113,11 @@ test "hal: ext encoder cont mode ramp-down on stop" {
     try std.testing.expect(enc.jog_active);
 
     Cap.last = 0;
-    enc.poll(40);
+    poll_ops.releaseOnWheelStop(&enc, &drv, true, snap.*, 'X', @intFromEnum(snap.state), 40);
+    try std.testing.expect(enc.jog_active);
+    try std.testing.expectEqual(@as(u8, 0), Cap.last);
+
+    poll_ops.releaseOnWheelStop(&enc, &drv, true, snap.*, 'X', @intFromEnum(snap.state), 120);
     try std.testing.expect(!enc.jog_active);
     try std.testing.expectEqual(@as(u8, 0x85), Cap.last);
 }

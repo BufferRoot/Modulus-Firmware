@@ -15,8 +15,12 @@
 #include <esp_lcd_mipi_dsi.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
 #include <esp_lvgl_port.h>
 #include <lvgl.h>
+#endif
 
 static const char *TAG = "ui_engine_flush";
 static uint32_t s_last_px;
@@ -25,6 +29,56 @@ static uint16_t *s_fb[3];
 static uint8_t s_num_fbs;
 static uint8_t s_back; /* index Zig paints into */
 static uint16_t *s_scanout;
+/* Given by the DPI refresh-done ISR once the DMA link switch has landed. */
+static SemaphoreHandle_t s_flip_done;
+static bool s_flip_cb_ok;
+
+static bool IRAM_ATTR on_refresh_done(esp_lcd_panel_handle_t panel,
+                                      esp_lcd_dpi_panel_event_data_t *edata,
+                                      void *user_ctx)
+{
+    (void)panel;
+    (void)edata;
+    (void)user_ctx;
+    BaseType_t hp = pdFALSE;
+    if (s_flip_done) {
+        xSemaphoreGiveFromISR(s_flip_done, &hp);
+    }
+    return hp == pdTRUE;
+}
+
+/* Take over the DPI refresh-done callback so flip can wait for vsync.
+ *
+ * Call ONLY after lvgl_port_remove_disp() — display_shim does this in
+ * modulus_display_zig_takeover(). esp_lcd_dpi_panel_register_event_callbacks
+ * *replaces* the callback set, and esp_lvgl_port's callback is what completes
+ * an LVGL flush. Two earlier attempts failed for exactly that reason:
+ *   1. Register while the LVGL display still existed -> a flush in flight at
+ *      takeover never completed, and lv_refr.c wait_for_flushing() (a bare
+ *      `while(disp->flushing);`) spun taskLVGL at prio 5 on Core 0, starving
+ *      IDLE0. Task WDT every 5 s, "CPU 0: taskLVGL".
+ *   2. Complete it with lv_display_flush_ready() from our ISR -> WDT gone,
+ *      but that dispatches LVGL events and is not ISR-safe; zig_ui hung.
+ * With the display removed there is no flush to orphan, so neither applies. */
+void modulus_ui_engine_flush_enable_vsync(void)
+{
+    if (s_flip_cb_ok || !s_panel || s_num_fbs < 2) {
+        return;
+    }
+    if (!s_flip_done) {
+        s_flip_done = xSemaphoreCreateBinary();
+    }
+    esp_lcd_dpi_panel_event_callbacks_t cbs = {
+        .on_refresh_done = on_refresh_done,
+    };
+    const esp_err_t cb = esp_lcd_dpi_panel_register_event_callbacks(s_panel, &cbs, NULL);
+    s_flip_cb_ok = (cb == ESP_OK && s_flip_done != NULL);
+    if (!s_flip_cb_ok) {
+        ESP_LOGW(TAG, "flip vsync wait off (%s) — tear possible", esp_err_to_name(cb));
+    } else {
+        ESP_LOGI(TAG, "flip vsync wait: on");
+    }
+}
 
 enum {
     k_panel_w = 720,
@@ -134,6 +188,13 @@ esp_err_t modulus_ui_engine_flush_flip(void)
         ESP_LOGW(TAG, "FB flip failed: %s", esp_err_to_name(err));
         return err;
     }
+    /* draw_bitmap only QUEUES the DMA link switch; the panel keeps scanning
+     * the old buffer until the next frame boundary. Releasing that buffer to
+     * Zig as the new back before then lets the next paint tear the frame still
+     * on screen. Wait for refresh-done. */
+    if (s_flip_cb_ok) {
+        (void)xSemaphoreTake(s_flip_done, pdMS_TO_TICKS(50));
+    }
     s_back = (uint8_t)((s_back + 1u) % s_num_fbs);
     s_scanout = s_fb[s_back];
     s_last_px = (uint32_t)k_fb_px;
@@ -145,6 +206,9 @@ esp_lcd_panel_handle_t modulus_ui_engine_flush_panel(void)
     return s_panel;
 }
 
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
+/* LVGL-only: under ZIG_UI display_shim binds the panel directly from
+ * bsp_display_new_with_handles(), so this private-struct read is gone. */
 /* Prefix of esp_lvgl_port's private lvgl_port_display_ctx_t (src/lvgl9). */
 typedef struct {
     int disp_type;
@@ -194,6 +258,7 @@ void modulus_ui_engine_flush_try_bind_from_lvgl(lv_display_t *disp)
     }
 #endif
 }
+#endif /* !CONFIG_MODULUS_ZIG_UI_ENGINE */
 
 /** True when panel + at least one DPI FB are ready for Zig paint. */
 bool modulus_ui_engine_flush_ready(void)

@@ -37,7 +37,10 @@
 #endif
 static const char *TAG = "modulus_ui";
 extern void modulus_zig_fill_cnc_status(modulus_cnc_status_t *out);
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
+/* LVGL refresh timer — the Zig engine paces itself in zig_ui_task. */
 static lv_timer_t *s_refresh_tmr = NULL;
+#endif
 static bool s_dashboard_loaded = false;
 static uint32_t s_refresh_period_cached = 0;
 
@@ -52,6 +55,7 @@ extern void modulus_zig_ui_frame(void);
 extern void modulus_zig_ui_arm_boot_hold(void);
 extern void modulus_zig_ui_install_late(void);
 static TaskHandle_t s_zig_ui_task;
+static volatile uint32_t s_zig_ui_polls;
 
 static void zig_ui_task(void *arg)
 {
@@ -73,39 +77,72 @@ static void zig_ui_task(void *arg)
     modulus_zig_ui_arm_boot_hold();
     ESP_LOGI(TAG, "zig_ui boot frame flushed (%u px)",
              (unsigned)modulus_ui_engine_flush_last_px());
-    uint32_t polls = 0;
-    int64_t next_report_us = esp_timer_get_time() + 5000000;
+    /* Touch is sampled once per iteration, so this period is also the input
+     * sample period: at 33 ms a quick tap could land and lift inside one
+     * window and never be seen. 10 ms matches the LVGL indev rate this
+     * replaced (CONFIG_FREERTOS_HZ=1000, so one tick == 1 ms).
+     *
+     * vTaskDelayUntil, not vTaskDelay: a relative delay made the period
+     * `paint + remainder`, so a 25 ms render frame stretched the 3-poll render
+     * cadence from 30 ms to ~45 ms and made it breathe with paint cost. The
+     * absolute deadline keeps the sample rate phase-locked and returns
+     * immediately when a long frame already overran it. */
+    TickType_t last_wake = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(10);
     for (;;) {
-        const int64_t t0 = esp_timer_get_time();
         modulus_zig_ui_frame();
-        polls++;
-        if (t0 >= next_report_us) {
-            next_report_us = t0 + 5000000;
-            ESP_LOGI(TAG, "zig_ui %lu polls, last %lld us, flush %u px, stack hwm %u",
-                     (unsigned long)polls, (long long)(esp_timer_get_time() - t0),
-                     (unsigned)modulus_ui_engine_flush_last_px(),
-                     (unsigned)uxTaskGetStackHighWaterMark(NULL));
+        s_zig_ui_polls++;
+        const TickType_t now = xTaskGetTickCount();
+        if ((TickType_t)(now - last_wake) >= period) {
+            /* Frame overran its slot. Plain vTaskDelayUntil would return
+             * immediately here and keep returning until it caught up the
+             * missed deadlines — zig_ui then never blocks, IDLE0 never runs
+             * and the task WDT fires. Resync and yield a tick instead, so
+             * every iteration blocks at least once. */
+            last_wake = now;
+            vTaskDelay(1);
+        } else {
+            vTaskDelayUntil(&last_wake, period);
         }
-        /* Touch is sampled once per iteration, so this period is also the input
-         * sample period: at 33 ms a quick tap could land and lift inside one
-         * window and never be seen. 10 ms matches the LVGL indev rate this
-         * replaced. After a long rotate, skip the delay so the next poll runs
-         * immediately instead of adding another 10 ms of dead input time. */
-        const int64_t elapsed_us = esp_timer_get_time() - t0;
-        const int64_t period_us = 10000;
-        if (elapsed_us < period_us) {
-            vTaskDelay(pdMS_TO_TICKS((uint32_t)((period_us - elapsed_us + 999) / 1000)));
-        }
+    }
+}
+
+extern uint32_t modulus_zig_dirty_merge_all_count(void);
+extern uint32_t modulus_zig_last_dirty_px(void);
+
+/* Health line lives on its own task: a ~100 char ESP_LOGI at 115200 baud
+ * blocks ~9 ms, which inside the frame loop dropped a frame every 5 s.
+ * NOTE: only visible at log level >= Info; storage_shim restores NVS `loglvl`
+ * during boot, so a device set to Warning shows nothing here. */
+static void zig_ui_health_task(void *arg)
+{
+    TaskHandle_t ui = (TaskHandle_t)arg;
+    uint32_t last_polls = 0;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        const uint32_t polls = s_zig_ui_polls;
+        ESP_LOGI(TAG, "zig_ui %lu polls (%lu/s), dirty %lu px, merge-all %lu, stack hwm %u",
+                 (unsigned long)polls,
+                 (unsigned long)((polls - last_polls) / 5u),
+                 (unsigned long)modulus_zig_last_dirty_px(),
+                 (unsigned long)modulus_zig_dirty_merge_all_count(),
+                 (unsigned)uxTaskGetStackHighWaterMark(ui));
+        last_polls = polls;
     }
 }
 #endif
 
 void modulus_ui_set_refresh_period_ms(uint32_t ms)
 {
+#if CONFIG_MODULUS_ZIG_UI_ENGINE
+    /* Zig paces itself; keep the cached value for the settings readout. */
+    s_refresh_period_cached = ms;
+#else
     if (s_refresh_tmr) {
         s_refresh_period_cached = ms;
         lv_timer_set_period(s_refresh_tmr, ms);
     }
+#endif
 }
 
 static uint32_t refresh_ms_from_hz(uint8_t hz_idx)
@@ -146,6 +183,9 @@ static uint32_t adaptive_refresh_ms(const modulus_cnc_status_t *st)
 
 static void maybe_update_refresh_period(const modulus_cnc_status_t *st)
 {
+#if CONFIG_MODULUS_ZIG_UI_ENGINE
+    (void)st;
+#else
     if (!s_refresh_tmr) {
         return;
     }
@@ -154,6 +194,7 @@ static void maybe_update_refresh_period(const modulus_cnc_status_t *st)
         s_refresh_period_cached = ms;
         lv_timer_set_period(s_refresh_tmr, ms);
     }
+#endif
 }
 
 static uint32_t refresh_period_ms(void)
@@ -169,11 +210,13 @@ void modulus_ui_set_dashboard_refresh_hz(uint8_t refr_hz)
         refr_hz = 2;
     }
     modulus_nvs_set_u8("refr_hz", refr_hz);
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
     if (s_refresh_tmr) {
         modulus_cnc_status_t st = {};
         modulus_zig_fill_cnc_status(&st);
         maybe_update_refresh_period(&st);
     }
+#endif
 }
 
 #if !CONFIG_MODULUS_ZIG_UI_ENGINE
@@ -220,6 +263,12 @@ void modulus_ui_show_boot_screen(void)
      * FB on PSRAM via c_allocator — stack is call depth / locals only. */
     BaseType_t ok = xTaskCreatePinnedToCore(
         zig_ui_task, "zig_ui", 65536, NULL, 5, &s_zig_ui_task, 0);
+    if (ok == pdPASS) {
+        /* Prio 1: never preempts zig_ui (5) or sys_task; UART blocking here
+         * costs nothing. Core 0 so it cannot land on the CNC core. */
+        (void)xTaskCreatePinnedToCore(zig_ui_health_task, "zig_ui_hp", 3072,
+                                      s_zig_ui_task, 1, NULL, 0);
+    }
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "zig_ui task create failed");
         s_zig_ui_task = NULL;

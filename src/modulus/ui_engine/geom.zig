@@ -6,6 +6,11 @@ pub var hit_pad: i32 = 0;
 /// Engine / flush dirty list capacity (raise to cut merge-all → full-frame).
 pub const dirty_cap: usize = 64;
 
+/// Count of `DirtySet.add` cap overflows (each collapses the set to one AABB,
+/// usually the full frame). Surfaced in the perf HUD — a rising count means
+/// `dirty_cap` is too small for the busiest screen.
+pub var merge_all_events: u32 = 0;
+
 pub const Rect = struct {
     x: i32 = 0,
     y: i32 = 0,
@@ -71,24 +76,41 @@ pub fn DirtySet(comptime cap: usize) type {
             self.len = 0;
         }
 
+        /// Merging on *any* overlap and stopping at the first hit left two
+        /// defects: the grown rect could still overlap a later slot (so the
+        /// same pixels were rotated twice, and `totalArea` over-counted), and a
+        /// one-pixel corner touch unioned two far-apart rects plus the gap
+        /// between them into one near-full-screen AABB.
+        /// Now: cascade until nothing more merges, and only merge when the
+        /// union stays within 1.5x the summed area. Separate rects cost
+        /// `a + b` writes (overlap rotated twice), merged costs `u`, so the
+        /// allowance keeps real overlaps merged while a corner kiss — where
+        /// `u` explodes to cover the gap — is left as two rects.
         pub fn add(self: *Self, r: Rect) void {
             if (r.isEmpty()) return;
+            var merged = r;
             var i: usize = 0;
-            while (i < self.len) : (i += 1) {
+            while (i < self.len) {
                 const cur = self.rects[i];
-                const hit = !Rect.intersect(cur, r).isEmpty();
-                if (hit) {
-                    self.rects[i] = Rect.unionBounds(cur, r);
-                    return;
+                const u = Rect.unionBounds(cur, merged);
+                const overlaps = !Rect.intersect(cur, merged).isEmpty();
+                if (overlaps and u.area() * 2 <= (cur.area() + merged.area()) * 3) {
+                    merged = u;
+                    self.len -= 1;
+                    self.rects[i] = self.rects[self.len];
+                    continue; // re-test slot i (swap-removed tail landed here)
                 }
+                i += 1;
             }
             if (self.len < cap) {
-                self.rects[self.len] = r;
+                self.rects[self.len] = merged;
                 self.len += 1;
                 return;
             }
-            // ponytail: merge-all when cap hit; tile grid later if needed
-            var bounds = r;
+            // Cap hit: collapse to one AABB. Counted so the perf HUD can show
+            // full-frame collapses instead of leaving them to be guessed at.
+            merge_all_events +%= 1;
+            var bounds = merged;
             for (self.rects[0..self.len]) |cur| {
                 bounds = Rect.unionBounds(bounds, cur);
             }
@@ -110,4 +132,53 @@ test "dirty merges overlap" {
     d.add(.{ .x = 5, .y = 5, .w = 10, .h = 10 });
     try @import("std").testing.expectEqual(@as(usize, 1), d.len);
     try @import("std").testing.expect(d.rects[0].area() > 100);
+}
+
+test "dirty keeps corner-touching rects apart" {
+    const t = @import("std").testing;
+    var d: DirtySet(8) = .{};
+    // 1 px of overlap at the corner; union would be 200x200 = 40000 vs 2*10201.
+    d.add(.{ .x = 0, .y = 0, .w = 101, .h = 101 });
+    d.add(.{ .x = 100, .y = 100, .w = 100, .h = 100 });
+    try t.expectEqual(@as(usize, 2), d.len);
+    try t.expect(d.totalArea() < 40000);
+}
+
+test "dirty cascades so no two slots overlap" {
+    const t = @import("std").testing;
+    var d: DirtySet(8) = .{};
+    d.add(.{ .x = 0, .y = 0, .w = 40, .h = 40 });
+    d.add(.{ .x = 60, .y = 0, .w = 40, .h = 40 });
+    try t.expectEqual(@as(usize, 2), d.len);
+    // Bridges both: old code merged into slot 0 only and left slot 1 overlapping.
+    d.add(.{ .x = 30, .y = 0, .w = 40, .h = 40 });
+    try t.expectEqual(@as(usize, 1), d.len);
+    var i: usize = 0;
+    while (i < d.len) : (i += 1) {
+        var j = i + 1;
+        while (j < d.len) : (j += 1) {
+            try t.expect(Rect.intersect(d.rects[i], d.rects[j]).isEmpty());
+        }
+    }
+}
+
+test "dirty totalArea does not double count after cascade" {
+    const t = @import("std").testing;
+    var d: DirtySet(8) = .{};
+    d.add(.{ .x = 0, .y = 0, .w = 20, .h = 20 });
+    d.add(.{ .x = 10, .y = 10, .w = 20, .h = 20 });
+    d.add(.{ .x = 5, .y = 5, .w = 20, .h = 20 });
+    try t.expectEqual(@as(usize, 1), d.len);
+    try t.expectEqual(d.rects[0].area(), d.totalArea());
+}
+
+test "dirty merge-all is counted" {
+    const t = @import("std").testing;
+    const before = merge_all_events;
+    var d: DirtySet(2) = .{};
+    d.add(.{ .x = 0, .y = 0, .w = 10, .h = 10 });
+    d.add(.{ .x = 500, .y = 0, .w = 10, .h = 10 });
+    d.add(.{ .x = 0, .y = 500, .w = 10, .h = 10 });
+    try t.expectEqual(@as(usize, 1), d.len);
+    try t.expectEqual(before + 1, merge_all_events);
 }

@@ -54,6 +54,7 @@ typedef struct {
     char name[32];
     ble_addr_t addr;
     int8_t rssi;
+    bool named; /* name came from an AD field, not the MAC fallback */
 } ble_scan_entry_t;
 
 static ble_scan_entry_t s_scan_entries[MODULUS_BLE_MAX_SCAN];
@@ -119,8 +120,16 @@ static void ble_scan_add(const ble_addr_t *addr, const char *name, int8_t rssi)
     }
     const int existing = ble_scan_find_addr(addr);
     if (existing >= 0) {
-        if (rssi > s_scan_entries[existing].rssi) {
-            s_scan_entries[existing].rssi = rssi;
+        ble_scan_entry_t *e = &s_scan_entries[existing];
+        if (rssi > e->rssi) {
+            e->rssi = rssi;
+        }
+        /* Most peripherals carry the name only in the SCAN_RSP, which arrives as
+         * a second report for the same MAC — backfill it over the MAC fallback. */
+        if (!e->named && name && name[0]) {
+            strncpy(e->name, name, sizeof(e->name) - 1);
+            e->name[sizeof(e->name) - 1] = '\0';
+            e->named = true;
         }
         return;
     }
@@ -130,6 +139,7 @@ static void ble_scan_add(const ble_addr_t *addr, const char *name, int8_t rssi)
     e->rssi = rssi;
     if (name && name[0]) {
         strncpy(e->name, name, sizeof(e->name) - 1);
+        e->named = true;
     } else {
         ble_addr_to_str(addr, e->name, sizeof(e->name));
     }
@@ -277,25 +287,25 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     (void)arg;
     switch (event->type) {
     case BLE_GAP_EVENT_DISC: {
-        struct ble_hs_adv_fields fields;
-        if (ble_hs_adv_parse_fields(&fields, event->disc.data, event->disc.length_data) != 0) {
-            break;
-        }
         char name[32] = {};
-        if (fields.name && fields.name_len > 0) {
+        struct ble_hs_adv_fields fields;
+        if (ble_hs_adv_parse_fields(&fields, event->disc.data, event->disc.length_data) == 0 &&
+            fields.name && fields.name_len > 0) {
             const int n = fields.name_len < 31 ? (int)fields.name_len : 31;
             memcpy(name, fields.name, (size_t)n);
             name[n] = '\0';
         }
+        /* Always add — nameless ADs use MAC (old parse-fail path dropped all). */
         if (s_settings_scanning) {
             ble_scan_add(&event->disc.addr, name[0] ? name : NULL, event->disc.rssi);
         }
         if (s_open && !s_settings_scanning && name[0] && s_target[0]) {
             if (strcmp(name, s_target) == 0) {
+                uint8_t own = 0;
+                (void)ble_hs_id_infer_auto(0, &own);
                 (void)ble_gap_disc_cancel();
                 s_settings_conn_state = BLE_SET_CONNECT;
-                (void)ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &event->disc.addr, 30000, NULL,
-                                      ble_gap_event, NULL);
+                (void)ble_gap_connect(own, &event->disc.addr, 30000, NULL, ble_gap_event, NULL);
             }
         }
         break;
@@ -385,10 +395,16 @@ static void ble_transport_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
+    uint8_t own = 0;
+    if (ble_hs_id_infer_auto(0, &own) != 0) {
+        ESP_LOGW(TAG, "infer own addr failed — skip NUS disc");
+        vTaskDelete(NULL);
+        return;
+    }
     struct ble_gap_disc_params dp = {};
     dp.passive = 0;
     dp.filter_duplicates = 1;
-    (void)ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &dp, ble_gap_event, NULL);
+    (void)ble_gap_disc(own, BLE_HS_FOREVER, &dp, ble_gap_event, NULL);
     vTaskDelete(NULL);
 }
 
@@ -419,14 +435,16 @@ static void ble_cancel_active_scan(void)
 
 bool modulus_ble_settings_enable(void)
 {
-    s_bt_on = true;
-    modulus_nvs_set_u8("bt", 1);
 #if CONFIG_BT_NIMBLE_ENABLED
     ble_load_bonded_peer();
     if (!modulus_ble_host_ensure()) {
         ESP_LOGW(TAG, "BLE host init failed");
         return false;
     }
+#endif
+    s_bt_on = true;
+    modulus_nvs_set_u8("bt", 1);
+#if CONFIG_BT_NIMBLE_ENABLED
     ESP_LOGI(TAG, "BLE radio on (NimBLE VHCI)");
 #else
     ESP_LOGW(TAG, "BLE disabled (CONFIG_BT_NIMBLE_ENABLED=n)");
@@ -467,10 +485,9 @@ void modulus_ble_resume_after_espnow(void)
     if (modulus_nvs_get_u8("bt", 0) == 0) {
         return;
     }
-    if (!modulus_ble_settings_enable()) {
-        ESP_LOGW(TAG, "BLE resume after ESP-NOW failed");
-    } else {
-        ESP_LOGI(TAG, "BLE resumed after ESP-NOW");
+    /* Async worker — never ble_host_ensure() on SDIO poll / transport_stop thread. */
+    if (!modulus_wireless_ble_enable()) {
+        ESP_LOGW(TAG, "BLE resume after ESP-NOW deferred");
     }
 }
 
@@ -541,6 +558,10 @@ const char *modulus_ble_settings_status_text(void)
     if (modulus_ble_host_ready()) {
         return "Ready";
     }
+    /* Never leave UI on Starting after HCI/SDIO death. */
+    if (modulus_ble_host_failed() || !modulus_wireless_transport_up()) {
+        return "C6 offline";
+    }
     return "Starting";
 #else
     return "NimBLE disabled";
@@ -590,16 +611,81 @@ const char *modulus_ble_settings_paired_text(void)
     return "0 paired";
 }
 
+#if CONFIG_BT_NIMBLE_ENABLED
+static volatile bool s_scan_busy;
+
+static void ble_scan_worker(void *arg)
+{
+    (void)arg;
+    bool started = false;
+
+    /* Wait for radio on + NimBLE sync (enable may still be finishing). */
+    for (int i = 0; i < 200; i++) {
+        if (s_bt_on && modulus_ble_host_ready()) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (!s_bt_on || !modulus_ble_host_ready()) {
+        ESP_LOGW(TAG, "BLE scan: host not ready");
+        goto done;
+    }
+    if (s_settings_conn_state == BLE_SET_CONNECT ||
+        s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        ESP_LOGW(TAG, "BLE scan blocked: connecting/connected");
+        goto done;
+    }
+    if (s_settings_scanning) {
+        ble_cancel_active_scan();
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    uint8_t own = 0;
+    if (ble_hs_id_infer_auto(0, &own) != 0) {
+        ESP_LOGE(TAG, "BLE scan: infer own addr failed");
+        goto done;
+    }
+
+    s_scan_n = 0;
+    s_settings_scanning = true;
+    struct ble_gap_disc_params dp = {};
+    dp.passive = 0;
+    /* Duplicate filtering also drops the SCAN_RSP that carries the device name,
+     * leaving the list showing bare MACs. 10 s bounded, so the extra reports
+     * are affordable. */
+    dp.filter_duplicates = 0;
+    /* Duration in ms (ESP-IDF NimBLE). PUBLIC own-addr often fails on RPA-only. */
+    int rc = ble_gap_disc(own, 10000, &dp, ble_gap_event, NULL);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "ble_gap_disc rc=%d — retry random", rc);
+        own = BLE_OWN_ADDR_RANDOM;
+        rc = ble_gap_disc(own, 10000, &dp, ble_gap_event, NULL);
+    }
+    if (rc != 0) {
+        ESP_LOGE(TAG, "ble_gap_disc failed rc=%d", rc);
+        s_settings_scanning = false;
+        goto done;
+    }
+    started = true;
+    ESP_LOGI(TAG, "BLE discovery started (10s)");
+
+done:
+    if (!started) {
+        s_settings_scanning = false;
+        s_scan_done = true;
+    }
+    s_scan_busy = false;
+    vTaskDelete(NULL);
+}
+#endif
+
 bool modulus_ble_settings_scan_start(void)
 {
-    if (!s_bt_on) {
-        return false;
-    }
 #if CONFIG_BT_NIMBLE_ENABLED
-    if (!modulus_ble_host_ensure()) {
-        return false;
+    if (s_scan_busy || s_settings_scanning) {
+        return true;
     }
-    if (s_settings_scanning || s_settings_conn_state == BLE_SET_CONNECT) {
+    if (s_settings_conn_state == BLE_SET_CONNECT) {
         return false;
     }
     if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
@@ -608,12 +694,11 @@ bool modulus_ble_settings_scan_start(void)
     }
     s_scan_done = false;
     s_scan_n = 0;
-    s_settings_scanning = true;
-    struct ble_gap_disc_params dp = {};
-    dp.passive = 0;
-    dp.filter_duplicates = 1;
-    if (ble_gap_disc(BLE_OWN_ADDR_PUBLIC, 8000, &dp, ble_gap_event, NULL) != 0) {
-        s_settings_scanning = false;
+    s_scan_busy = true;
+    /* Off UI thread: host ensure / sync wait can take many seconds. */
+    if (xTaskCreatePinnedToCore(ble_scan_worker, "ble_scan", 4096, NULL, 5, NULL, 0) !=
+        pdPASS) {
+        s_scan_busy = false;
         s_scan_done = true;
         return false;
     }
@@ -680,7 +765,11 @@ bool modulus_ble_settings_connect(int idx)
     const ble_addr_t *addr = &s_scan_entries[idx].addr;
     strncpy(s_connected_name, s_scan_entries[idx].name, sizeof(s_connected_name) - 1);
     ESP_LOGI(TAG, "connecting to %s", s_connected_name);
-    if (ble_gap_connect(BLE_OWN_ADDR_PUBLIC, addr, 30000, NULL, ble_gap_event, NULL) != 0) {
+    uint8_t own = 0;
+    if (ble_hs_id_infer_auto(0, &own) != 0) {
+        own = BLE_OWN_ADDR_PUBLIC;
+    }
+    if (ble_gap_connect(own, addr, 30000, NULL, ble_gap_event, NULL) != 0) {
         s_settings_conn_state = BLE_SET_FAIL;
         return false;
     }
@@ -783,7 +872,6 @@ void modulus_ble_settings_clear_paired(void)
 #endif
     s_bonded_name[0] = '\0';
     modulus_nvs_set_str("ble_name", "");
-    modulus_nvs_set_str("ble_mac", "");
     ESP_LOGI(TAG, "bonds cleared");
 }
 

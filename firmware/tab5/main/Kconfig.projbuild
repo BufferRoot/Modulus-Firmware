@@ -10,7 +10,7 @@ menu "Modulus Tab5"
     config MODULUS_C6_BOOT_DELAY_MS
         int "Delay (ms) after WLAN_PWR_EN before esp_hosted connect"
         depends on MODULUS_WIFI_ENABLED
-        default 5500
+        default 7000
         range 500 10000
         help
             Tab5 cold-boot: measure from first WLAN_PWR_EN (PI4IOE2 init in
@@ -18,7 +18,17 @@ menu "Modulus Tab5"
             reset (esp_hosted retry). C6 network_adapter needs ~3-5 s after
             power; esp_hosted GPIO15 reset inside esp_wifi_init reboots C6 —
             CONFIG_ESP_HOSTED_SDIO_RESET_DELAY_MS must match this margin.
-            Increase (5500 ms typical) if sdmmc_card_init returns 0x107.
+            Use 7000 ms on Tab5 (5500 ms esp_hosted delay + margin).
+            Increase if sdmmc_card_init returns 0x107.
+            Do NOT WLAN_PWR-cycle on ESP_RST_USB (serial monitor) — only ensure.
+
+    config MODULUS_C6_THREAD_SUPPORTED
+        bool "C6 OpenThread radio available (802.15.4 on SDIO ch10)"
+        default n
+        depends on MODULUS_WIFI_ENABLED
+        help
+            Default Modulus C6 image ships with Thread disabled. Enable only
+            after flashing a C6 build with CONFIG_MODULUS_C6_THREAD=y.
 
     config MODULUS_ZIG_UI_ENGINE
         bool "Zig UI engine owns scanout (omit LVGL widget UI)"

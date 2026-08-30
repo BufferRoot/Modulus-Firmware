@@ -7,14 +7,20 @@
 #include "nvs_shim.h"
 
 #include <bsp/m5stack_tab5.h>
+#include <bsp/touch.h>
 #include <esp_lcd_touch.h>
 #include <esp_log.h>
 #include <esp_timer.h>
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
 #include <lvgl.h>
+#endif
 #include <stdint.h>
 
 static const char *TAG = "modulus_touch";
 
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
+/* Prefix of esp_lvgl_port's private lvgl_port_touch_ctx_t. Only the LVGL
+ * build still needs it; under ZIG_UI we own the handle from bsp_touch_new(). */
 typedef struct {
     esp_lcd_touch_handle_t handle;
     lv_indev_t *indev;
@@ -24,11 +30,18 @@ typedef struct {
     } scale;
 } touch_port_ctx_t;
 
-static bool s_glove = false;
-static bool s_hooked = false;
 static bool s_tracking = false;
 static lv_indev_state_t s_last_state = LV_INDEV_STATE_RELEASED;
 static lv_point_t s_last_point = {0, 0};
+#endif /* !CONFIG_MODULUS_ZIG_UI_ENGINE */
+
+static bool s_glove = false;
+static bool s_hooked = false;
+/* The one esp_lcd_touch handle: bsp_touch_new() under ZIG_UI, adopted from the
+ * LVGL indev otherwise. */
+static esp_lcd_touch_handle_t s_touch;
+static float s_scale_x = 1.0f;
+static float s_scale_y = 1.0f;
 
 /* Zig scanout path state. Deliberately separate from the LVGL indev state
  * above: that one holds *panel* (portrait 720x1280) coords, this one holds
@@ -41,8 +54,11 @@ static lv_point_t s_last_point = {0, 0};
  * on the DRO (axis select, Home, Zero). */
 static bool s_zig_owns = false;
 static bool s_zig_tracking = false;
-static lv_indev_state_t s_zig_state = LV_INDEV_STATE_RELEASED;
-static lv_point_t s_zig_point = {0, 0};
+static bool s_zig_pressed = false;
+static struct {
+    int32_t x;
+    int32_t y;
+} s_zig_point = {0, 0};
 /** Last poll that saw real contact — release is time-gated, not poll-gated. */
 static int64_t s_last_contact_us = 0;
 
@@ -66,6 +82,37 @@ enum {
     k_touch_bus_wait_ms = 5,
 };
 
+/* --- LVGL-free panel->logical mapping (migration step 1 of 2) --------------
+ *
+ * Inverse of `fb.zig blitRotated`, which is the only thing that decides where a
+ * logical pixel lands on the panel:
+ *
+ *   90 CW (normal):  logical (lx,ly) -> panel (ly, LOGICAL_W-1-lx)
+ *   270  (flipped):  logical (lx,ly) -> panel (PANEL_W-1-ly, lx)
+ *
+ * Inverting the normal case gives  lx = LOGICAL_W-1-py,  ly = px.
+ *
+ * `Engine.mapPointer` owns the 180 flip, so — exactly like the LVGL path this
+ * replaced — we always apply the 90 mapping here and never the flipped one.
+ *
+ * VERIFIED on device 2026-08-29 (ELF 56fd6651): A/B'd against
+ * lv_display_rotate_point over a corner + column walk, 0 mismatches, and the
+ * port reported `scale 1.000/1.000, lvgl res 1280x720`. The LVGL rotate call
+ * and the lv_display_* resolution getters are now gone from this path. */
+enum {
+    k_panel_w = 720,
+    k_panel_h = 1280,
+    k_logical_w = 1280,
+    k_logical_h = 720,
+};
+
+static void panel_to_logical(int32_t px, int32_t py, int32_t *lx, int32_t *ly)
+{
+    *lx = (int32_t)k_logical_w - 1 - py;
+    *ly = px;
+}
+
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
 static void modulus_touch_read(lv_indev_t *indev, lv_indev_data_t *data)
 {
     touch_port_ctx_t *ctx = lv_indev_get_driver_data(indev);
@@ -121,20 +168,27 @@ static void modulus_touch_read(lv_indev_t *indev, lv_indev_data_t *data)
     s_last_state = LV_INDEV_STATE_RELEASED;
     data->state = LV_INDEV_STATE_RELEASED;
 }
+#endif /* !CONFIG_MODULUS_ZIG_UI_ENGINE */
 
 void modulus_touch_init(void)
 {
     if (s_hooked) {
         return;
     }
-
+    s_glove = modulus_nvs_get_u8("touch_glove", 0) != 0;
+#if CONFIG_MODULUS_ZIG_UI_ENGINE
+    /* No LVGL indev to hook — the Zig UI polls via modulus_touch_poll_for_zig
+     * and the handle comes from modulus_touch_create_handle(). */
+    s_hooked = true;
+    ESP_LOGI(TAG, "Touch HAL ready (glove=%d, min_str %u/%u, zig poll)",
+             s_glove, (unsigned)k_min_strength_glove, (unsigned)k_min_strength_normal);
+#else
     lv_indev_t *indev = bsp_display_get_input_dev();
     if (!indev) {
         ESP_LOGW(TAG, "No BSP touch indev — glove mode inactive");
         return;
     }
 
-    s_glove = modulus_nvs_get_u8("touch_glove", 0) != 0;
     lv_indev_set_read_cb(indev, modulus_touch_read);
     lv_indev_set_scroll_limit(indev, k_scroll_limit_px);
 
@@ -150,6 +204,7 @@ void modulus_touch_init(void)
     ESP_LOGI(TAG, "Touch HAL ready (glove=%d, min_str %u/%u, read %ums, scroll_lim %upx)",
              s_glove, (unsigned)k_min_strength_glove, (unsigned)k_min_strength_normal,
              (unsigned)k_read_period_ms, (unsigned)k_scroll_limit_px);
+#endif
 }
 
 void modulus_touch_set_glove_mode(bool enabled)
@@ -164,6 +219,7 @@ void modulus_touch_set_glove_mode(bool enabled)
 void modulus_touch_pause_for_zig(void)
 {
     s_zig_owns = true;
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
     lv_indev_t *indev = bsp_display_get_input_dev();
     if (!indev) {
         return;
@@ -172,16 +228,27 @@ void modulus_touch_pause_for_zig(void)
     if (read_timer) {
         lv_timer_pause(read_timer);
     }
+#endif
 }
 
 bool modulus_touch_poll_pressed(void)
 {
-    lv_indev_t *indev = bsp_display_get_input_dev();
-    if (!indev) {
-        return false;
+    esp_lcd_touch_handle_t h = s_touch;
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
+    /* Pre-takeover wake path: handle still lives in the LVGL indev ctx. */
+    if (!h) {
+        lv_indev_t *indev = bsp_display_get_input_dev();
+        if (!indev) {
+            return false;
+        }
+        touch_port_ctx_t *ctx = lv_indev_get_driver_data(indev);
+        if (!ctx || !ctx->handle) {
+            return false;
+        }
+        h = ctx->handle;
     }
-    touch_port_ctx_t *ctx = lv_indev_get_driver_data(indev);
-    if (!ctx || !ctx->handle) {
+#endif
+    if (!h) {
         return false;
     }
     if (!modulus_i2c_coex_lock(15)) {
@@ -189,8 +256,8 @@ bool modulus_touch_poll_pressed(void)
     }
     uint8_t touch_cnt = 0;
     esp_lcd_touch_point_data_t touch_data[1] = {0};
-    esp_lcd_touch_read_data(ctx->handle);
-    esp_lcd_touch_get_data(ctx->handle, touch_data, &touch_cnt, 1);
+    esp_lcd_touch_read_data(h);
+    esp_lcd_touch_get_data(h, touch_data, &touch_cnt, 1);
     modulus_i2c_coex_unlock();
     if (touch_cnt == 0) {
         return false;
@@ -198,6 +265,85 @@ bool modulus_touch_poll_pressed(void)
     const uint16_t min_str = s_glove ? k_min_strength_glove : k_min_strength_normal;
     return touch_data[0].strength >= min_str;
 }
+
+/* --- LVGL-free touch handle (migration step 2 of 2) ------------------------
+ *
+ * The Zig poll path used to fetch the touch handle and X/Y scale out of
+ * esp_lvgl_port's PRIVATE touch_port_ctx_t via lv_indev_get_driver_data() —
+ * the same hand-copied-struct hazard as the display bind.
+ *
+ * We do NOT call bsp_touch_new() to get our own: the BSP already created one
+ * inside bsp_display_start_with_config, and a second handle would mean two
+ * drivers talking to the same I2C touch controller. Instead we adopt the
+ * existing handle and then remove the indev. lvgl_port_remove_touch() deletes
+ * only the lv_indev, unregisters the INT callback and frees its ctx — it does
+ * NOT delete the esp_lcd_touch handle, which the BSP still owns. Verified in
+ * esp_lvgl_port/src/lvgl9/esp_lvgl_port_touch.c.
+ *
+ * scale defaults to 1 in lvgl_port_add_touch and measured 1.000/1.000 on Tab5
+ * (touch and panel are both 720x1280); carried anyway for variants. */
+static bool s_adopted;
+
+/* ZIG_UI: create the one touch handle ourselves. There is no LVGL indev to
+ * adopt from any more — display_shim uses bsp_display_new_with_handles()
+ * instead of bsp_display_start_with_config(), so nothing else opens the
+ * controller and there is no second driver to collide with. */
+bool modulus_touch_create_handle(void)
+{
+    if (s_adopted) {
+        return s_touch != NULL;
+    }
+    s_adopted = true;
+    const bsp_touch_config_t cfg = {0};
+    const esp_err_t err = bsp_touch_new(&cfg, &s_touch);
+    if (err != ESP_OK || s_touch == NULL) {
+        ESP_LOGE(TAG, "bsp_touch_new failed: %s", esp_err_to_name(err));
+        s_touch = NULL;
+        return false;
+    }
+    s_scale_x = 1.0f;
+    s_scale_y = 1.0f;
+    ESP_LOGI(TAG, "touch handle created %p (scale 1.000/1.000, no LVGL indev)",
+             (void *)s_touch);
+    return true;
+}
+
+#if !CONFIG_MODULUS_ZIG_UI_ENGINE
+bool modulus_touch_adopt_handle(void)
+{
+    if (s_adopted) {
+        return s_touch != NULL;
+    }
+    lv_indev_t *indev = bsp_display_get_input_dev();
+    if (!indev) {
+        ESP_LOGW(TAG, "no LVGL indev to adopt — touch unavailable");
+        s_adopted = true;
+        return false;
+    }
+    touch_port_ctx_t *ctx = lv_indev_get_driver_data(indev);
+    if (!ctx || !ctx->handle) {
+        ESP_LOGE(TAG, "lvgl_port touch ctx invalid — touch unavailable");
+        s_adopted = true;
+        return false;
+    }
+
+    s_touch = ctx->handle;
+    s_scale_x = (ctx->scale.x != 0.0f) ? ctx->scale.x : 1.0f;
+    s_scale_y = (ctx->scale.y != 0.0f) ? ctx->scale.y : 1.0f;
+    s_adopted = true;
+
+    /* Must run while the LVGL port task is alive: remove_touch takes
+     * lvgl_port_lock(0). Called from modulus_display_zig_takeover before
+     * lvgl_port_stop(). */
+    const esp_err_t rm = lvgl_port_remove_touch(indev);
+    if (rm != ESP_OK) {
+        ESP_LOGW(TAG, "lvgl_port_remove_touch: %s", esp_err_to_name(rm));
+    }
+    ESP_LOGI(TAG, "touch handle adopted %p (scale %.3f/%.3f), LVGL indev removed",
+             (void *)s_touch, (double)s_scale_x, (double)s_scale_y);
+    return true;
+}
+#endif /* !CONFIG_MODULUS_ZIG_UI_ENGINE */
 
 void modulus_touch_poll_for_zig(int32_t *x, int32_t *y, int *pressed)
 {
@@ -211,18 +357,13 @@ void modulus_touch_poll_for_zig(int32_t *x, int32_t *y, int *pressed)
         *pressed = 0;
     }
 
-    lv_indev_t *indev = bsp_display_get_input_dev();
-    if (!indev) {
-        return;
-    }
-    touch_port_ctx_t *ctx = lv_indev_get_driver_data(indev);
-    if (!ctx || !ctx->handle) {
+    if (!s_touch) {
         return;
     }
     if (!modulus_i2c_coex_lock(k_touch_bus_wait_ms)) {
         /* Hold last sample under contention (same as LVGL read path). */
         if (pressed) {
-            *pressed = (s_zig_state == LV_INDEV_STATE_PRESSED) ? 1 : 0;
+            *pressed = (s_zig_pressed) ? 1 : 0;
         }
         if (x) {
             *x = s_zig_point.x;
@@ -235,12 +376,12 @@ void modulus_touch_poll_for_zig(int32_t *x, int32_t *y, int *pressed)
 
     uint8_t touch_cnt = 0;
     esp_lcd_touch_point_data_t touch_data[1] = {0};
-    esp_lcd_touch_read_data(ctx->handle);
-    esp_lcd_touch_get_data(ctx->handle, touch_data, &touch_cnt, 1);
+    esp_lcd_touch_read_data(s_touch);
+    esp_lcd_touch_get_data(s_touch, touch_data, &touch_cnt, 1);
     modulus_i2c_coex_unlock();
 
     if (touch_cnt == 0) {
-        if (s_zig_state == LV_INDEV_STATE_PRESSED &&
+        if (s_zig_pressed &&
             (esp_timer_get_time() - s_last_contact_us) < (k_release_hold_ms * 1000)) {
             /* Hold last point — dropped samples must not end the gesture. */
             if (pressed) {
@@ -255,7 +396,7 @@ void modulus_touch_poll_for_zig(int32_t *x, int32_t *y, int *pressed)
             return;
         }
         s_zig_tracking = false;
-        s_zig_state = LV_INDEV_STATE_RELEASED;
+        s_zig_pressed = false;
         return;
     }
 
@@ -267,39 +408,36 @@ void modulus_touch_poll_for_zig(int32_t *x, int32_t *y, int *pressed)
     s_zig_tracking = true;
     s_last_contact_us = esp_timer_get_time();
 
-    /* Same path as LVGL indev: scaled panel/native coords, then
-     * lv_display_rotate_point (ROT_90 → landscape 1280×720). Zig paint uses
-     * the matching 90° CW blit; Engine.mapPointer handles 180° flip only. */
-    lv_point_t pt = {
-        .x = (lv_coord_t)(ctx->scale.x * (float)touch_data[0].x),
-        .y = (lv_coord_t)(ctx->scale.y * (float)touch_data[0].y),
-    };
-    lv_display_t *disp = lv_indev_get_display(indev);
-    if (disp) {
-        lv_display_rotate_point(disp, &pt);
+    /* Panel-native coords. scale measured 1.000/1.000 on Tab5 (touch and panel
+     * are both 720x1280); honoured anyway in case a variant differs. */
+    const int32_t px = (int32_t)(s_scale_x * (float)touch_data[0].x);
+    const int32_t py = (int32_t)(s_scale_y * (float)touch_data[0].y);
+
+    int32_t lx = 0;
+    int32_t ly = 0;
+    panel_to_logical(px, py, &lx, &ly);
+
+    if (lx < 0) {
+        lx = 0;
+    } else if (lx >= (int32_t)k_logical_w) {
+        lx = (int32_t)k_logical_w - 1;
     }
-    const int32_t hor = disp ? lv_display_get_horizontal_resolution(disp) : 1280;
-    const int32_t ver = disp ? lv_display_get_vertical_resolution(disp) : 720;
-    if (pt.x < 0) {
-        pt.x = 0;
-    } else if (pt.x >= hor) {
-        pt.x = hor - 1;
-    }
-    if (pt.y < 0) {
-        pt.y = 0;
-    } else if (pt.y >= ver) {
-        pt.y = ver - 1;
+    if (ly < 0) {
+        ly = 0;
+    } else if (ly >= (int32_t)k_logical_h) {
+        ly = (int32_t)k_logical_h - 1;
     }
 
-    s_zig_state = LV_INDEV_STATE_PRESSED;
-    s_zig_point = pt;
+    s_zig_pressed = true;
+    s_zig_point.x = lx;
+    s_zig_point.y = ly;
     if (pressed) {
         *pressed = 1;
     }
     if (x) {
-        *x = pt.x;
+        *x = lx;
     }
     if (y) {
-        *y = pt.y;
+        *y = ly;
     }
 }

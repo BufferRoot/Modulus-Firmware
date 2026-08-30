@@ -37,4 +37,8 @@ pub const default_coal_ms: u8 = 20;
 pub const default_pend_max: u8 = 32;
 /// Fallback poll period (ms) when measured dt is unusable.
 pub const nominal_poll_ms: u32 = 20;
+/// Quiet time after the last encoder count before cancelling an active jog.
+/// A single empty poll used to cancel after roughly 10 ms, often before grblHAL
+/// had time to execute the just-sent finite STEP jog.
+pub const wheel_stop_quiet_ms: u32 = 100;
 

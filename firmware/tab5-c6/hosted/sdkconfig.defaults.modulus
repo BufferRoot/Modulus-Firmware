@@ -31,6 +31,9 @@ CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
 # (no more Wi-Fi/802.15.4 contention driven by a ZBOSS coordinator here).
 CONFIG_MODULUS_C6_ZIGBEE=n
 
+# Tab5 field: C6 debug UART (GPIO16/17) floats when USB-TTL removed — pull-ups
+# and USB-UART chip-reset disable in modulus_c6_board.c (no IDF 6 Kconfig yet).
+
 # --- ESP-NOW unassociated-STA fix (esp_hosted 2.x regression) ---
 # The C6 runs WiFi STA but never associates to an AP (ESP-NOW only). esp_hosted
 # 2.11.4 defaults the disconnected-STA modem power-save ON, which sleeps the radio

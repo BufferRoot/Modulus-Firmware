@@ -6,6 +6,7 @@
 #include "tab5_hw.h"
 
 #include <bsp/m5stack_tab5.h>
+#include <driver/gpio.h>
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -59,6 +60,40 @@ static esp_err_t mod_out(i2c_master_dev_handle_t dev, uint8_t pin, bool high)
         clrbit(&cur, pin);
     }
     return wr1(dev, PI4IO_REG_OUT_SET, cur);
+}
+
+/** PI4IOE2 P0 (WLAN_PWR): stock BSP may chip-reset E2 and leave P0 High-Z. */
+static esp_err_t mod_e2_drive_pin(uint8_t pin, bool high)
+{
+    if (!s_e2) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    uint8_t dir = 0;
+    esp_err_t err = rd1(s_e2, PI4IO_REG_IO_DIR, &dir);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (!(dir & (1U << pin))) {
+        setbit(&dir, pin);
+        err = wr1(s_e2, PI4IO_REG_IO_DIR, dir);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    uint8_t hiz = 0;
+    err = rd1(s_e2, PI4IO_REG_OUT_H_IM, &hiz);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (hiz & (1U << pin)) {
+        clrbit(&hiz, pin);
+        err = wr1(s_e2, PI4IO_REG_OUT_H_IM, hiz);
+        if (err != ESP_OK) {
+            return err;
+        }
+        ESP_LOGW(TAG, "WLAN_PWR_EN (E2.P%u) was High-Z — drive re-enabled", pin);
+    }
+    return mod_out(s_e2, pin, high);
 }
 
 static bool init_expander1(i2c_master_bus_handle_t bus)
@@ -218,11 +253,11 @@ void tab5_pi4ioe_cycle_wlan_pwr(void)
         return;
     }
     ESP_LOGI(TAG, "C6 SDIO: WLAN_PWR cycle (P4 cold boot)");
-    (void)mod_out(s_e2, TAB5_E2_P0_WLAN_PWR, false);
+    (void)mod_e2_drive_pin(TAB5_E2_P0_WLAN_PWR, false);
     vTaskDelay(pdMS_TO_TICKS(150));
     s_c6_reset_us = 0;
     s_wlan_pwr_on_us = 0;
-    (void)mod_out(s_e2, TAB5_E2_P0_WLAN_PWR, true);
+    (void)mod_e2_drive_pin(TAB5_E2_P0_WLAN_PWR, true);
     uint8_t out_rb = 0;
     (void)rd1(s_e2, PI4IO_REG_OUT_SET, &out_rb);
     ESP_LOGI(TAG, "WLAN_PWR_EN (E2.P0) -> 1 (OUT_SET=0x%02X P0=%d)", out_rb,
@@ -234,6 +269,25 @@ void tab5_pi4ioe_note_c6_reset(void)
 {
     s_c6_reset_us = esp_timer_get_time();
     ESP_LOGI(TAG, "C6 SDIO: reset anchor (GPIO15 / esp_hosted retry)");
+}
+
+void tab5_pi4ioe_c6_hardware_reset(void)
+{
+    /* Match LVGL hal_wireless::c6_hardware_reset — GPIO15 CHIP_EN, not WLAN_PWR. */
+    ESP_LOGI(TAG, "C6 SDIO: GPIO15 hardware reset");
+    gpio_config_t io_conf = {
+        .pin_bit_mask = 1ULL << GPIO_NUM_15,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf);
+    gpio_set_level(GPIO_NUM_15, 0);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    gpio_set_level(GPIO_NUM_15, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    tab5_pi4ioe_note_c6_reset();
 }
 
 void tab5_pi4ioe_wait_c6_sdio_ready(void)
@@ -270,7 +324,7 @@ void tab5_pi4ioe_set_wifi_power_en(bool en)
         ESP_LOGW(TAG, "WLAN_PWR_EN skipped — expander2 missing");
         return;
     }
-    const esp_err_t err = mod_out(s_e2, TAB5_E2_P0_WLAN_PWR, en);
+    const esp_err_t err = mod_e2_drive_pin(TAB5_E2_P0_WLAN_PWR, en);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "WLAN_PWR_EN write failed: %s", esp_err_to_name(err));
         return;
@@ -279,6 +333,34 @@ void tab5_pi4ioe_set_wifi_power_en(bool en)
         tab5_pi4ioe_note_wlan_pwr_on();
     }
     ESP_LOGI(TAG, "WLAN_PWR_EN (E2.P0) -> %d", en);
+}
+
+bool tab5_pi4ioe_ensure_wlan_pwr_on(void)
+{
+    if (!s_e2) {
+        return false;
+    }
+    uint8_t out_rb = 0;
+    uint8_t hiz = 0;
+    if (rd1(s_e2, PI4IO_REG_OUT_SET, &out_rb) != ESP_OK ||
+        rd1(s_e2, PI4IO_REG_OUT_H_IM, &hiz) != ESP_OK) {
+        return false;
+    }
+    const bool was_high = (out_rb & (1U << TAB5_E2_P0_WLAN_PWR)) != 0;
+    const bool was_hiz = (hiz & (1U << TAB5_E2_P0_WLAN_PWR)) != 0;
+    if (mod_e2_drive_pin(TAB5_E2_P0_WLAN_PWR, true) != ESP_OK) {
+        return false;
+    }
+    (void)rd1(s_e2, PI4IO_REG_OUT_SET, &out_rb);
+    ESP_LOGI(TAG, "WLAN_PWR_EN ensure (OUT_SET=0x%02X P0=%d was_hiz=%d)",
+             out_rb, (out_rb & (1U << TAB5_E2_P0_WLAN_PWR)) ? 1 : 0, was_hiz ? 1 : 0);
+    if (!was_high || was_hiz) {
+        /* Rail was off or floating — restart C6 boot window from now. */
+        s_c6_reset_us = 0;
+        s_wlan_pwr_on_us = 0;
+        tab5_pi4ioe_note_wlan_pwr_on();
+    }
+    return true;
 }
 
 void tab5_pi4ioe_set_ext_antenna_enable(bool en)
