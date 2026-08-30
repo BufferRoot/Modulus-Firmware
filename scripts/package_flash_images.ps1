@@ -1,7 +1,7 @@
 # Package prebuilt flash images from local IDF build dirs into dist/flash-images/.
 # Run after a successful full build. Does not rebuild.
 param(
-    [string]$Version = "3.0.0",
+    [string]$Version = "3.1.0",
     [string]$OutRoot = ""
 )
 

@@ -1,6 +1,6 @@
 //! Modulus OS core — version constants and boot entry.
 
-pub const version = "3.0";
+pub const version = "3.1.0";
 pub const os_name = "MODULUS";
 pub const creator = "POWERED BY M5STACK";
 

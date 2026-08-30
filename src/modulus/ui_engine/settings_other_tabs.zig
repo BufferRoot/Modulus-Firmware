@@ -1581,8 +1581,8 @@ fn paintSystem(logical: *fb.LogicalFb, theme: tokens.Theme, prefs: *const prefs_
     form.paintSection(logical, theme, &cur, scroll, "Device");
     var ver_card_buf: [12]u8 = undefined;
     var fw_buf: [24]u8 = undefined;
-    const card_ver = std.fmt.bufPrint(&ver_card_buf, "v{s}", .{modulus.version}) catch "v3.0";
-    const fw_line = std.fmt.bufPrint(&fw_buf, "Modulus v{s}", .{modulus.version}) catch "Modulus v3.0";
+    const card_ver = std.fmt.bufPrint(&ver_card_buf, "v{s}", .{modulus.version}) catch "v3.1.0";
+    const fw_line = std.fmt.bufPrint(&fw_buf, "Modulus v{s}", .{modulus.version}) catch "Modulus v3.1.0";
     form.paintDeviceCard(logical, theme, &cur, scroll, card_ver);
     form.paintDetail(logical, theme, &cur, scroll, "Firmware", fw_line);
     form.paintDetail(logical, theme, &cur, scroll, "ESP-IDF", if (comptime @import("builtin").os.tag == .freestanding) "ESP-IDF 6.0" else "n/a (host)");
