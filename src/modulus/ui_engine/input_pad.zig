@@ -81,6 +81,7 @@ pub const Target = enum {
     dash_mac_off,
     dash_probe_zoff,
     qs_mdi,
+    usb_rename,
     search,
 };
 

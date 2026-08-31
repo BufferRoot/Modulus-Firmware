@@ -18,11 +18,17 @@
 #include <esp_vfs_fat.h>
 #include <lvgl.h>
 #include <usb/usb_host.h>
+#include <usb/msc_host.h>
+#include <usb/msc_host_vfs.h>
 #include "tab5_pi4ioe.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <dirent.h>
+#include <strings.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 static const char *TAG = "modulus_storage";
 
@@ -41,6 +47,103 @@ static char s_usb_status[32] = "VBUS off";
 static int64_t s_usb_last_poll_us = 0;
 
 static TaskHandle_t s_usb_lib_task;
+
+#define USB_VOL_PATH "/usb"
+#define USB_VOL_MAX 32
+#define USB_VOL_NAME 28
+
+/* --- USB mass storage --------------------------------------------------
+ *
+ * usb_host_install() only enumerates; it does NOT make files visible. The
+ * M-Panel USB tool reads /usb via opendir(), so a G-code stick showed the tile
+ * as active (s_usb_dev_count > 0 counts *any* device) but listed nothing.
+ * MSC class driver + FATFS VFS is the missing layer.
+ *
+ * Mount/unmount is driven by the MSC connect callback, never polled: the UI
+ * calls modulus_storage_is_usb_host_enabled() every frame, and doing
+ * filesystem work on the paint path is how the I2C storm happened. */
+static msc_host_device_handle_t s_msc_dev;
+static msc_host_vfs_handle_t s_msc_vfs;
+static uint8_t s_msc_pending_addr;   /* set by callback, consumed by usb_host_ensure */
+static bool s_msc_pending_disconnect;
+static bool s_msc_mounted;
+
+/* Defined after s_usb_vol; clears the cached G-code list on unmount. */
+static void msc_clear_catalog(void);
+/* Defined below; starts the host stack and consumes MSC events. */
+static void usb_host_ensure(void);
+
+static void msc_event_cb(const msc_host_event_t *event, void *arg)
+{
+    (void)arg;
+    if (!event) {
+        return;
+    }
+    /* Callback runs on the MSC driver task — record intent only, do the mount
+     * from usb_host_ensure() where the I2C coex lock is already handled. */
+    if (event->event == MSC_DEVICE_CONNECTED) {
+        s_msc_pending_addr = event->device.address;
+    } else if (event->event == MSC_DEVICE_DISCONNECTED) {
+        s_msc_pending_disconnect = true;
+    }
+}
+
+static void msc_unmount(void)
+{
+    if (s_msc_vfs) {
+        (void)msc_host_vfs_unregister(s_msc_vfs);
+        s_msc_vfs = NULL;
+    }
+    if (s_msc_dev) {
+        (void)msc_host_uninstall_device(s_msc_dev);
+        s_msc_dev = NULL;
+    }
+    if (s_msc_mounted) {
+        s_msc_mounted = false;
+        msc_clear_catalog();   /* drop stale names so the UI cannot act on them */
+        ESP_LOGI(TAG, "USB volume unmounted");
+    }
+}
+
+static void msc_try_mount(uint8_t addr)
+{
+    if (s_msc_mounted) {
+        return;
+    }
+    esp_err_t err = msc_host_install_device(addr, &s_msc_dev);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "msc_host_install_device: %s", esp_err_to_name(err));
+        s_msc_dev = NULL;
+        return;
+    }
+    const esp_vfs_fat_mount_config_t mount_cfg = {
+        .format_if_mount_failed = false,   /* never reformat a user's stick */
+        .max_files = 4,
+        .allocation_unit_size = 8192,
+    };
+    err = msc_host_vfs_register(s_msc_dev, USB_VOL_PATH, &mount_cfg, &s_msc_vfs);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "msc_host_vfs_register(%s): %s", USB_VOL_PATH, esp_err_to_name(err));
+        (void)msc_host_uninstall_device(s_msc_dev);
+        s_msc_dev = NULL;
+        s_msc_vfs = NULL;
+        return;
+    }
+    s_msc_mounted = true;
+    ESP_LOGI(TAG, "USB volume mounted at %s", USB_VOL_PATH);
+}
+
+/** True once an MSC volume is mounted at /usb — not merely "a device exists".
+ *
+ * Also pumps usb_host_ensure(): this is the per-frame call from
+ * device_ui_bridge, and it is what starts the host stack and consumes MSC
+ * connect/disconnect events. Without the pump nothing ever enumerates. */
+bool modulus_storage_usb_volume_mounted(void)
+{
+    usb_host_ensure();
+    return s_msc_mounted;
+}
+
 
 /* Mirror of the BSP's usb_lib_task — we cannot use bsp_usb_host_start(), see
  * usb_host_start_safe(). */
@@ -92,11 +195,36 @@ static esp_err_t usb_host_start_safe(void)
         (void)usb_host_uninstall();
         return ESP_ERR_NO_MEM;
     }
+
+    /* MSC class driver. Its task must sit BELOW zig_ui (prio 5) and stay off
+     * Core 1 (CNC) — an unpinned prio-10 driver task next to the UI is how
+     * taskLVGL starved IDLE0. */
+    const msc_host_driver_config_t msc_cfg = {
+        .create_backround_task = true,
+        .task_priority = 4,
+        .stack_size = 4096,
+        .callback = msc_event_cb,
+        .callback_arg = NULL,
+        .core_id = 0,
+    };
+    err = msc_host_install(&msc_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "msc_host_install: %s — USB drive files unavailable",
+                 esp_err_to_name(err));
+        /* Non-fatal: enumeration still works, the volume just stays empty. */
+    }
     return ESP_OK;
 }
 
 static esp_err_t usb_host_stop_safe(void)
 {
+    /* Order matters: drop the volume and the MSC driver before the host stack,
+     * or msc_host_uninstall_device() acts on a torn-down bus. */
+    msc_unmount();
+    (void)msc_host_uninstall();
+    s_msc_pending_addr = 0;
+    s_msc_pending_disconnect = false;
+
     const esp_err_t err = usb_host_uninstall();
     if (s_usb_lib_task) {
         vTaskDelete(s_usb_lib_task);
@@ -166,7 +294,21 @@ static void usb_host_ensure(void)
         }
     }
 
-    if (s_usb_dev_count > 0) {
+    /* Consume MSC events recorded by the driver-task callback. Doing the
+     * mount here keeps FATFS work off the callback and off the paint path. */
+    if (s_msc_pending_disconnect) {
+        s_msc_pending_disconnect = false;
+        msc_unmount();
+    }
+    if (s_msc_pending_addr != 0 && !s_msc_mounted) {
+        const uint8_t addr = s_msc_pending_addr;
+        s_msc_pending_addr = 0;
+        msc_try_mount(addr);
+    }
+
+    if (s_msc_mounted) {
+        snprintf(s_usb_status, sizeof(s_usb_status), "Drive mounted");
+    } else if (s_usb_dev_count > 0) {
         snprintf(s_usb_status, sizeof(s_usb_status), "Device linked");
     } else {
         snprintf(s_usb_status, sizeof(s_usb_status), "No device");
@@ -232,6 +374,28 @@ void modulus_storage_unmount(void)
     }
     s_sd_mounted = false;
     ESP_LOGI(TAG, "SD unmounted");
+}
+
+static bool sd_remount_with_format(void)
+{
+    (void)bsp_sdcard_unmount();
+    s_sd_mounted = false;
+
+    static const esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
+        .format_if_mount_failed = true,
+        .max_files = 5,
+        .allocation_unit_size = 16 * 1024,
+    };
+    bsp_sdcard_cfg_t cfg = {0};
+    cfg.mount = &mount_cfg;
+    const esp_err_t ret = bsp_sdcard_sdmmc_mount(&cfg);
+    if (ret == ESP_OK) {
+        s_sd_mounted = true;
+        ESP_LOGI(TAG, "SD mounted with format-if-needed at %s", s_mount_point);
+        return true;
+    }
+    ESP_LOGW(TAG, "SD remount with format failed: %s", esp_err_to_name(ret));
+    return false;
 }
 
 bool modulus_storage_is_mounted(void)
@@ -632,4 +796,434 @@ const char *modulus_storage_usb_host_status_text(void)
 {
     usb_host_ensure();
     return s_usb_status;
+}
+
+static struct {
+    char names[USB_VOL_MAX][USB_VOL_NAME];
+    size_t count;
+} s_usb_vol;
+
+static void msc_clear_catalog(void)
+{
+    s_usb_vol.count = 0;
+}
+
+static bool usb_vol_is_gcode(const char *name)
+{
+    const char *dot = strrchr(name, '.');
+    if (!dot) {
+        return false;
+    }
+    const char *ext = dot + 1;
+    return strcasecmp(ext, "nc") == 0 || strcasecmp(ext, "gcode") == 0 ||
+           strcasecmp(ext, "ngc") == 0 || strcasecmp(ext, "tap") == 0;
+}
+
+static bool usb_vol_path(char *out, size_t cap, const char *name)
+{
+    int n = snprintf(out, cap, "%s/%s", USB_VOL_PATH, name);
+    return n > 0 && (size_t)n < cap;
+}
+
+size_t modulus_usb_volume_refresh(void)
+{
+    s_usb_vol.count = 0;
+    /* Gate on a MOUNTED volume, not on "a device is present" —
+     * s_usb_dev_count counts any USB device (keyboard, hub, …). */
+    if (!s_msc_mounted) {
+        return 0;
+    }
+    DIR *d = opendir(USB_VOL_PATH);
+    if (!d) {
+        ESP_LOGW(TAG, "opendir(%s) failed though volume is mounted", USB_VOL_PATH);
+        return 0;
+    }
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL && s_usb_vol.count < USB_VOL_MAX) {
+#if defined(DT_REG)
+        if (ent->d_type != DT_UNKNOWN && ent->d_type != DT_REG) {
+            continue;
+        }
+#endif
+        if (!usb_vol_is_gcode(ent->d_name)) {
+            continue;
+        }
+        strncpy(s_usb_vol.names[s_usb_vol.count], ent->d_name, USB_VOL_NAME - 1);
+        s_usb_vol.names[s_usb_vol.count][USB_VOL_NAME - 1] = '\0';
+        s_usb_vol.count++;
+    }
+    closedir(d);
+    return s_usb_vol.count;
+}
+
+bool modulus_usb_volume_name(size_t index, char *buf, size_t cap)
+{
+    if (!buf || cap == 0 || index >= s_usb_vol.count) {
+        return false;
+    }
+    strncpy(buf, s_usb_vol.names[index], cap - 1);
+    buf[cap - 1] = '\0';
+    return true;
+}
+
+bool modulus_usb_volume_delete(size_t index)
+{
+    if (index >= s_usb_vol.count) {
+        return false;
+    }
+    char path[64];
+    if (!usb_vol_path(path, sizeof(path), s_usb_vol.names[index])) {
+        return false;
+    }
+    if (unlink(path) != 0) {
+        return false;
+    }
+    modulus_usb_volume_refresh();
+    return true;
+}
+
+bool modulus_usb_volume_rename(size_t index, const char *new_name)
+{
+    if (!new_name || new_name[0] == '\0' || index >= s_usb_vol.count || !usb_vol_is_gcode(new_name)) {
+        return false;
+    }
+    char old_path[64];
+    char new_path[64];
+    if (!usb_vol_path(old_path, sizeof(old_path), s_usb_vol.names[index])) {
+        return false;
+    }
+    if (!usb_vol_path(new_path, sizeof(new_path), new_name)) {
+        return false;
+    }
+    if (rename(old_path, new_path) != 0) {
+        return false;
+    }
+    modulus_usb_volume_refresh();
+    return true;
+}
+
+bool modulus_usb_volume_eject(void)
+{
+    if (!s_msc_mounted) {
+        return false;
+    }
+    /* Real eject: unregister the FATFS VFS and release the device so pulling
+     * the stick cannot corrupt it. No sync() on newlib/IDF — and none needed:
+     * esp_vfs_fat_unregister (inside msc_host_vfs_unregister) calls f_mount(0)
+     * which flushes FATFS buffers from rename/delete. */
+    msc_unmount();
+    ESP_LOGI(TAG, "USB volume ejected — safe to remove");
+    return true;
+}
+
+/* Read a window of lines from a G-code file for the View pane.
+ *
+ * Line-oriented, not byte-oriented: the viewer scrolls by line, and G-code
+ * files run to megabytes — we must never read the whole thing into RAM. Seeks
+ * from the start each call (files are small enough that this beats holding an
+ * open FILE* across UI frames, which would pin a FATFS file handle while the
+ * operator is idle in the viewer).
+ *
+ * Returns the number of lines written; each is NUL-terminated in `buf` and its
+ * offset stored in `line_offsets`. Long lines are truncated, not wrapped. */
+size_t modulus_usb_volume_read_lines(size_t index,
+                                     size_t first_line,
+                                     char *buf,
+                                     size_t buf_cap,
+                                     uint16_t *line_offsets,
+                                     size_t max_lines)
+{
+    if (!s_msc_mounted || index >= s_usb_vol.count || !buf || !line_offsets ||
+        buf_cap == 0 || max_lines == 0) {
+        return 0;
+    }
+    char path[64];
+    if (!usb_vol_path(path, sizeof(path), s_usb_vol.names[index])) {
+        return 0;
+    }
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        ESP_LOGW(TAG, "view: fopen(%s) failed", path);
+        return 0;
+    }
+
+    char line[MODULUS_USB_VIEW_LINE_MAX];
+    size_t skipped = 0;
+    while (skipped < first_line && fgets(line, sizeof(line), f)) {
+        skipped++;
+    }
+
+    size_t out_n = 0;
+    size_t used = 0;
+    while (out_n < max_lines && fgets(line, sizeof(line), f)) {
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+            line[--len] = '\0';
+        }
+        if (used + len + 1 > buf_cap) {
+            break;   /* buffer full — caller pages again */
+        }
+        line_offsets[out_n] = (uint16_t)used;
+        memcpy(buf + used, line, len);
+        buf[used + len] = '\0';
+        used += len + 1;
+        out_n++;
+    }
+    fclose(f);
+    return out_n;
+}
+
+/** Total line count — for the viewer's scrollbar and "line N of M". */
+size_t modulus_usb_volume_line_count(size_t index)
+{
+    if (!s_msc_mounted || index >= s_usb_vol.count) {
+        return 0;
+    }
+    char path[64];
+    if (!usb_vol_path(path, sizeof(path), s_usb_vol.names[index])) {
+        return 0;
+    }
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        return 0;
+    }
+    size_t n = 0;
+    int c;
+    int last = '\n';
+    while ((c = fgetc(f)) != EOF) {
+        if (c == '\n') n++;
+        last = c;
+    }
+    if (last != '\n') n++;   /* final line without trailing newline */
+    fclose(f);
+    return n;
+}
+
+#define SD_VOL_ROOT "/sdcard/modulus"
+#define SD_VOL_MAX 32
+#define SD_VOL_NAME 36
+
+static const char *const k_sd_folders[MODULUS_SD_VOL_FOLDER_COUNT] = {
+    "logs", "backups", "macros", "scripts", "reports", "cache",
+};
+
+static struct {
+    char names[SD_VOL_MAX][SD_VOL_NAME];
+    size_t count;
+} s_sd_vol;
+
+static bool sd_vol_mkdir_one(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        return S_ISDIR(st.st_mode);
+    }
+    if (mkdir(path, 0755) == 0) {
+        return true;
+    }
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static bool sd_vol_mkdir_p(const char *path)
+{
+    char tmp[96];
+    const size_t n = strnlen(path, sizeof(tmp) - 1);
+    if (n == 0 || n >= sizeof(tmp)) {
+        return false;
+    }
+    memcpy(tmp, path, n + 1);
+    for (size_t i = 1; i < n; i++) {
+        if (tmp[i] != '/') {
+            continue;
+        }
+        tmp[i] = '\0';
+        if (!sd_vol_mkdir_one(tmp)) {
+            return false;
+        }
+        tmp[i] = '/';
+    }
+    return sd_vol_mkdir_one(tmp);
+}
+
+bool modulus_sd_volume_ensure_layout(void)
+{
+    if (!s_sd_mounted && !modulus_storage_mount()) {
+        return false;
+    }
+    if (!sd_vol_mkdir_p(SD_VOL_ROOT)) {
+        return false;
+    }
+    char path[96];
+    for (size_t i = 0; i < MODULUS_SD_VOL_FOLDER_COUNT; i++) {
+        snprintf(path, sizeof(path), "%s/%s", SD_VOL_ROOT, k_sd_folders[i]);
+        if (!sd_vol_mkdir_p(path)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+const char *modulus_sd_volume_folder_rel(modulus_sd_vol_folder_t folder)
+{
+    if ((size_t)folder >= MODULUS_SD_VOL_FOLDER_COUNT) {
+        return "";
+    }
+    return k_sd_folders[folder];
+}
+
+static bool sd_vol_full_path(char *out, size_t cap, modulus_sd_vol_folder_t folder)
+{
+    if ((size_t)folder >= MODULUS_SD_VOL_FOLDER_COUNT) {
+        return false;
+    }
+    const int n = snprintf(out, cap, "%s/%s", SD_VOL_ROOT, k_sd_folders[folder]);
+    return n > 0 && (size_t)n < cap;
+}
+
+static void sd_vol_sort_desc(void)
+{
+    for (size_t i = 0; i + 1 < s_sd_vol.count; i++) {
+        for (size_t j = i + 1; j < s_sd_vol.count; j++) {
+            if (strcasecmp(s_sd_vol.names[i], s_sd_vol.names[j]) < 0) {
+                char tmp[SD_VOL_NAME];
+                memcpy(tmp, s_sd_vol.names[i], SD_VOL_NAME);
+                memcpy(s_sd_vol.names[i], s_sd_vol.names[j], SD_VOL_NAME);
+                memcpy(s_sd_vol.names[j], tmp, SD_VOL_NAME);
+            }
+        }
+    }
+}
+
+size_t modulus_sd_volume_refresh(modulus_sd_vol_folder_t folder)
+{
+    s_sd_vol.count = 0;
+    if (!s_sd_mounted && !modulus_storage_mount()) {
+        return 0;
+    }
+    char dir[96];
+    if (!sd_vol_full_path(dir, sizeof(dir), folder)) {
+        return 0;
+    }
+    (void)modulus_sd_volume_ensure_layout();
+    DIR *d = opendir(dir);
+    if (!d) {
+        return 0;
+    }
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL && s_sd_vol.count < SD_VOL_MAX) {
+        if (ent->d_name[0] == '.') {
+            continue;
+        }
+#if defined(DT_REG)
+        if (ent->d_type != DT_UNKNOWN && ent->d_type != DT_REG && ent->d_type != DT_DIR) {
+            continue;
+        }
+#endif
+        strncpy(s_sd_vol.names[s_sd_vol.count], ent->d_name, SD_VOL_NAME - 1);
+        s_sd_vol.names[s_sd_vol.count][SD_VOL_NAME - 1] = '\0';
+        s_sd_vol.count++;
+    }
+    closedir(d);
+    sd_vol_sort_desc();
+    return s_sd_vol.count;
+}
+
+bool modulus_sd_volume_name(size_t index, char *buf, size_t cap)
+{
+    if (!buf || cap == 0 || index >= s_sd_vol.count) {
+        return false;
+    }
+    strncpy(buf, s_sd_vol.names[index], cap - 1);
+    buf[cap - 1] = '\0';
+    return true;
+}
+
+bool modulus_sd_volume_delete(modulus_sd_vol_folder_t folder, size_t index)
+{
+    if (index >= s_sd_vol.count) {
+        return false;
+    }
+    char dir[96];
+    char path[160];
+    if (!sd_vol_full_path(dir, sizeof(dir), folder)) {
+        return false;
+    }
+    snprintf(path, sizeof(path), "%s/%s", dir, s_sd_vol.names[index]);
+    if (unlink(path) != 0) {
+        return false;
+    }
+    modulus_sd_volume_refresh(folder);
+    return true;
+}
+
+static bool sd_vol_stamp_path(char *out, size_t cap, const char *subdir, const char *prefix, const char *suffix)
+{
+    if (!modulus_sd_volume_ensure_layout()) {
+        return false;
+    }
+    time_t now = time(NULL);
+    struct tm tm = {0};
+    localtime_r(&now, &tm);
+    const int n = snprintf(out, cap, "%s/%s/%s_%04d%02d%02d_%02d%02d%02d%s",
+                           SD_VOL_ROOT, subdir, prefix,
+                           tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                           tm.tm_hour, tm.tm_min, tm.tm_sec, suffix);
+    return n > 0 && (size_t)n < cap;
+}
+
+bool modulus_sd_volume_backup_path(char *out, size_t cap)
+{
+    return sd_vol_stamp_path(out, cap, "backups", "settings", ".json");
+}
+
+bool modulus_sd_volume_log_path(char *out, size_t cap)
+{
+    return sd_vol_stamp_path(out, cap, "logs", "diag", ".txt");
+}
+
+bool modulus_sd_volume_entry_path(modulus_sd_vol_folder_t folder, size_t index, char *out, size_t cap)
+{
+    if (index >= s_sd_vol.count) {
+        return false;
+    }
+    char dir[96];
+    if (!sd_vol_full_path(dir, sizeof(dir), folder)) {
+        return false;
+    }
+    const int n = snprintf(out, cap, "%s/%s", dir, s_sd_vol.names[index]);
+    return n > 0 && (size_t)n < cap;
+}
+
+bool modulus_storage_format_sd(void)
+{
+    if (!s_sd_mounted && !modulus_storage_mount() && !sd_remount_with_format()) {
+        ESP_LOGW(TAG, "SD format: card not mountable");
+        return false;
+    }
+
+    sdmmc_card_t *card = bsp_sdcard_get_handle();
+    if (!card) {
+        ESP_LOGW(TAG, "SD format: no card handle");
+        return false;
+    }
+
+    esp_err_t err = esp_vfs_fat_sdcard_format(s_mount_point, card);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_vfs_fat_sdcard_format: %s — trying format-on-mount", esp_err_to_name(err));
+        if (!sd_remount_with_format()) {
+            return false;
+        }
+        card = bsp_sdcard_get_handle();
+        if (!card) {
+            return false;
+        }
+    }
+
+    s_sd_vol.count = 0;
+    if (!modulus_sd_volume_ensure_layout()) {
+        ESP_LOGW(TAG, "SD formatted but modulus layout failed");
+        return false;
+    }
+    ESP_LOGI(TAG, "SD formatted (FAT32); modulus folders ready");
+    return true;
 }

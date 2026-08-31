@@ -20,7 +20,7 @@ pub const State = struct {
     rapid_vis: f32 = 100,
 };
 
-pub const HitKind = enum { none, plus, minus, reset };
+pub const HitKind = enum { none, plus, minus, reset, fab };
 
 pub const Hit = struct {
     kind: HitKind = .none,
@@ -61,7 +61,7 @@ pub fn pressKey(which: Which, kind: HitKind) []const u8 {
             .spindle => "ovr.spindle.minus",
             .rapid => "ovr.rapid.minus",
         },
-        .reset, .none => switch (which) {
+        .reset, .none, .fab => switch (which) {
             .feed => "ovr.feed.reset",
             .spindle => "ovr.spindle.reset",
             .rapid => "ovr.rapid.reset",
@@ -284,6 +284,7 @@ fn touchSlab(card: geom.Rect, r: geom.Rect, grow_y: i32) geom.Rect {
 const slab_grow: i32 = tokens.Space.md;
 
 pub fn hitTest(bounds: geom.Rect, x: i32, y: i32, slots: [2]Which) Hit {
+    if (fabRect(bounds).contains(x, y)) return .{ .kind = .fab, .which = .feed };
     if (!bounds.contains(x, y)) return .{};
     const pair = coercePair(slots[0], slots[1]);
     for (pair, 0..) |which, si| {
@@ -380,4 +381,11 @@ test "fab placeholder sits on % row between cards" {
     try std.testing.expectEqual(pct_cy, fab.y + @divTrunc(fab.h, 2));
     // Overlaps the seam (wider than gap).
     try std.testing.expect(fab.w > gap);
+}
+
+test "fab hit on seam" {
+    const bounds: geom.Rect = .{ .x = 0, .y = 0, .w = 400, .h = 360 };
+    const fab = fabRect(bounds);
+    const hit = hitTest(bounds, fab.x + @divTrunc(fab.w, 2), fab.y + @divTrunc(fab.h, 2), .{ .feed, .spindle });
+    try std.testing.expect(hit.kind == .fab);
 }

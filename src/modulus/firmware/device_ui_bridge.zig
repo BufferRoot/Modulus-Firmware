@@ -697,6 +697,38 @@ pub fn wirelessCmd(eng: *Engine, cmd: ui_engine.engine.WirelessUiCmd) void {
         .zb_sensors => |idx| _ = c.modulus_wireless_zigbee_device_read_sensors(@intCast(idx)),
         .zb_cover => |p| _ = c.modulus_wireless_zigbee_device_cover(@intCast(p.idx), p.op),
         .zb_level => |p| _ = c.modulus_wireless_zigbee_device_set_level(@intCast(p.idx), p.level),
+        .zb_color_temp => |p| {
+            if (p.idx < eng.prefs.wireless.live_zb_n) {
+                eng.prefs.wireless.live_zb_snap[p.idx].color_temp_mireds = p.mireds;
+            }
+            _ = c.modulus_wireless_zigbee_device_color(@intCast(p.idx), 0, p.mireds, 10);
+        },
+        .zb_color_xy => |p| {
+            if (p.idx < eng.prefs.wireless.live_zb_n) {
+                eng.prefs.wireless.live_zb_snap[p.idx].color_x = p.x;
+                eng.prefs.wireless.live_zb_snap[p.idx].color_y = p.y;
+            }
+            _ = c.modulus_wireless_zigbee_device_color(@intCast(p.idx), 1, p.x, p.y);
+        },
+        .zb_effect => |p| {
+            if (p.idx < eng.prefs.wireless.live_zb_n) eng.prefs.wireless.live_zb_snap[p.idx].effect_idx = p.effect;
+        },
+        .zb_light_type => |p| {
+            if (p.idx < eng.prefs.wireless.live_zb_n) eng.prefs.wireless.live_zb_snap[p.idx].light_type_idx = p.typ;
+        },
+        .zb_min_level => |p| {
+            if (p.idx < eng.prefs.wireless.live_zb_n) eng.prefs.wireless.live_zb_snap[p.idx].min_level = p.level;
+            _ = c.modulus_wireless_zigbee_device_set_level(@intCast(p.idx), p.level);
+        },
+        .zb_max_level => |p| {
+            if (p.idx < eng.prefs.wireless.live_zb_n) eng.prefs.wireless.live_zb_snap[p.idx].max_level = p.level;
+        },
+        .zb_countdown => |p| {
+            if (p.idx < eng.prefs.wireless.live_zb_n) eng.prefs.wireless.live_zb_snap[p.idx].countdown_s = p.seconds;
+        },
+        .zb_child_lock => |p| {
+            if (p.idx < eng.prefs.wireless.live_zb_n) eng.prefs.wireless.live_zb_snap[p.idx].child_lock = p.on;
+        },
         .zb_refresh => {
             syncZbDevices(&eng.prefs.wireless);
         },
@@ -839,7 +871,10 @@ fn storagePoll(eng: *Engine) void {
     eng.prefs.storage.ps_total_mb = @intCast(mem.psram_total / (1024 * 1024));
     eng.prefs.storage.lvgl_free_kb = @intCast(mem.lvgl_free / 1024);
     eng.prefs.storage.lvgl_used_pct = mem.lvgl_used_pct;
-    eng.prefs.storage.usb_host = c.modulus_storage_is_usb_host_enabled();
+    // A mounted MSC volume, not merely "some USB device enumerated" — the M-Panel
+    // USB tool lists /usb, so gating on enumeration made the tile go active for a
+    // keyboard or hub and show an empty drive.
+    eng.prefs.storage.usb_host = c.modulus_storage_usb_volume_mounted();
 
     const m = device_runtime.maintMeters();
     eng.prefs.machine.odo_mm = m.travel_mm;
@@ -867,6 +902,26 @@ fn storagePoll(eng: *Engine) void {
 
 pub fn storSysCmd(eng: *Engine, cmd: ui_engine.engine.StorSysUiCmd) void {
     switch (cmd) {
+        .job_load_usb => |idx| {
+            if (!device_runtime.jobLoadUsb(idx)) {
+                eng.job_armed = false;
+                eng.showSnackbarError("Cannot read file");
+            }
+        },
+        .job_start => {
+            device_runtime.jobLogArmed(eng.job_armed);
+            if (!device_runtime.jobStart()) {
+                // Refused: not Idle, protocol has no ack contract, or nothing
+                // armed. Leave job_armed set so the operator can retry.
+                eng.showSnackbarError("Machine must be Idle");
+            }
+        },
+        .job_hold => device_runtime.jobHold(),
+        .job_resume => device_runtime.jobResume(),
+        .job_abort => {
+            device_runtime.jobAbort();
+            eng.job_armed = false;
+        },
         .mount => {
             c.modulus_storage_init();
             if (c.modulus_storage_mount()) {
@@ -881,6 +936,15 @@ pub fn storSysCmd(eng: *Engine, cmd: ui_engine.engine.StorSysUiCmd) void {
             c.modulus_storage_unmount();
             eng.prefs.storage.eject();
             storagePoll(eng);
+        },
+        .format_sd => {
+            if (c.modulus_storage_format_sd()) {
+                eng.prefs.storage.mount();
+                storagePoll(eng);
+            } else {
+                eng.prefs.storage.sd = .failed;
+                eng.prefs.storage.syncMounted();
+            }
         },
         .export_diag => {
             storagePoll(eng);
@@ -906,10 +970,51 @@ pub fn storSysCmd(eng: *Engine, cmd: ui_engine.engine.StorSysUiCmd) void {
                 eng.prefs.storage.markExportOk(false, "Export failed");
             }
         },
+        .export_settings_to => |path| {
+            storagePoll(eng);
+            if (eng.prefs.storage.sd != .mounted) {
+                eng.prefs.storage.markExportOk(false, "Need SD");
+                return;
+            }
+            _ = c.modulus_sd_volume_ensure_layout();
+            var z: [128:0]u8 = .{0} ** 128;
+            const n = @min(path.len, z.len - 1);
+            @memcpy(z[0..n], path[0..n]);
+            if (c.modulus_storage_export_settings(&z, false)) {
+                eng.prefs.storage.markExportOk(false, "Backed up");
+            } else {
+                eng.prefs.storage.markExportOk(false, "Backup failed");
+            }
+        },
         .import_settings => {
             if (c.modulus_storage_import_settings("/sdcard/modulus_settings.json", false)) {
                 loadPrefs(&eng.prefs);
                 eng.applyPrefsPublic();
+            }
+        },
+        .import_settings_from => |path| {
+            var z: [128:0]u8 = .{0} ** 128;
+            const n = @min(path.len, z.len - 1);
+            @memcpy(z[0..n], path[0..n]);
+            if (c.modulus_storage_import_settings(&z, false)) {
+                loadPrefs(&eng.prefs);
+                eng.applyPrefsPublic();
+            }
+        },
+        .export_diag_to => |path| {
+            storagePoll(eng);
+            if (eng.prefs.storage.sd != .mounted) {
+                eng.prefs.storage.markExportOk(true, "Need SD card");
+                return;
+            }
+            _ = c.modulus_sd_volume_ensure_layout();
+            var z: [128:0]u8 = .{0} ** 128;
+            const n = @min(path.len, z.len - 1);
+            @memcpy(z[0..n], path[0..n]);
+            if (c.modulus_storage_export_diagnostics(&z)) {
+                eng.prefs.storage.markExportOk(true, "Log saved");
+            } else {
+                eng.prefs.storage.markExportOk(true, "Export failed");
             }
         },
         .clear_cache => c.modulus_storage_clear_ui_cache(),
@@ -1027,12 +1132,15 @@ pub fn drainConsole(eng: *Engine) void {
     var dir: u8 = 0;
     var line: [96]u8 = undefined;
     var safety: u8 = 0;
+    var any = false;
     while (safety < 8) : (safety += 1) {
         const n = console_log.pop(&dir, &line);
         if (n < 0) break;
         const slice = line[0..@intCast(n)];
         quick_settings.termAppend(&eng.qs_term, &eng.qs_term_len, slice, dir != 0);
+        any = true;
     }
+    if (any) eng.terminalFollowTail();
 }
 
 /// Edits fire per touch sample (slider drag), so only live feedback runs inline.

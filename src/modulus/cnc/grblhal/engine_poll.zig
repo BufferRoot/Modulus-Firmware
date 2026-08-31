@@ -37,11 +37,18 @@ pub fn poll(eng: anytype, tick_ms: u32) void {
 
     if (eng.state == .querying) {
         if (tick_ms -% eng.last_query_ms >= gh_session.query_retry_ms) {
-            if (eng.query_retry_count >= gh_session.max_query_retries) {
+            // Do not give up while the machine was last seen executing — a
+            // running job legitimately starves the passive MPG port of
+            // replies, and dropping here just restarts the connect/disconnect
+            // churn for the whole duration of the job.
+            const busy = gh_session.stateIsBusy(eng.parser.status.state);
+            if (eng.query_retry_count >= gh_session.max_query_retries and !busy) {
                 eng.onDisconnect();
                 return;
             }
-            eng.query_retry_count += 1;
+            if (eng.query_retry_count < gh_session.max_query_retries) {
+                eng.query_retry_count += 1;
+            }
             const byte = statusQueryByte(eng.protocol, true);
             if (byte != 0) eng.send(&.{byte});
             eng.last_query_ms = tick_ms;
@@ -50,8 +57,16 @@ pub fn poll(eng: anytype, tick_ms: u32) void {
     }
 
     if (eng.state == .ready or eng.state == .locked or eng.state == .mpg_blocked) {
+        // Widen the window while the machine is executing: grblHAL answers the
+        // stream that owns it, so a PC sender's job starves our passive MPG
+        // port of replies. The 3 s window disconnected the pendant every time
+        // a job started.
+        const timeout = if (gh_session.stateIsBusy(eng.parser.status.state))
+            gh_session.busy_response_timeout_ms
+        else
+            gh_session.response_timeout_ms;
         if (eng.last_response_ms > 0 and
-            tick_ms -% eng.last_response_ms >= gh_session.response_timeout_ms)
+            tick_ms -% eng.last_response_ms >= timeout)
         {
             @branchHint(.unlikely);
             eng.onDisconnect();
@@ -65,6 +80,14 @@ pub fn poll(eng: anytype, tick_ms: u32) void {
             const byte = statusQueryByte(eng.protocol, false);
             if (byte != 0) eng.send(&.{byte});
             eng.last_poll_ms = tick_ms;
+        }
+        // Identification deferred while a PC sender owned the machine; do it
+        // now that we may safely put a `$` line on the wire.
+        if (eng.needs_info and engine_send.canSendLine(eng)) {
+            eng.needs_info = false;
+            eng.state = .configuring;
+            engine_send.requestInfo(eng);
+            return;
         }
         // Keep tool_number (and modal F/S) current from G-code T words via $G / 0x83.
         // grblHAL also pushes |T:n| on tool change in status reports (parsed separately).

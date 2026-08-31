@@ -31,6 +31,12 @@ pub const Engine = struct {
     query_retry_count: u8 = 0,
     tick_ms: u32 = 0,
     last_event: ParseEvent = .none,
+    /// Monotonic (wrapping) ack counters — see processLine.
+    ok_count: u32 = 0,
+    err_count: u32 = 0,
+    /// `$I` identification was deferred because the machine was not Idle.
+    /// Retried from poll once it is — see engine_send.canSendLine.
+    needs_info: bool = false,
     settings_dump: ?*settings_dump_mod.SettingsDump = null,
     protocol: cnc_config.Protocol = .grblhal,
     /// After soft-reset welcome, TX `$X` once (hard-limit unlock path).
@@ -98,6 +104,15 @@ pub const Engine = struct {
         console_log.pushRx(line); // terminal tap (status spam filtered inside)
         const evt = self.parser.parseLine(line);
         self.last_event = evt;
+        // Monotonic ack counters for the job streamer. `last_event` is a
+        // sample and is useless for flow control: at ~300 lines/s against a
+        // 100 Hz poll, most acks would be missed. Counters let the consumer
+        // take a delta instead. Wrapping is fine — deltas are computed with -%.
+        switch (evt) {
+            .ok => self.ok_count +%= 1,
+            .err => self.err_count +%= 1,
+            else => {},
+        }
         if (evt != .none) {
             self.last_response_ms = self.tick_ms;
         }
@@ -135,9 +150,16 @@ pub const Engine = struct {
                         self.state = .locked;
                     } else if (self.isClassicGrbl()) {
                         self.state = .ready;
-                    } else {
+                    } else if (engine_send.canSendLine(self)) {
                         self.state = .configuring;
                         engine_send.requestInfo(self);
+                    } else {
+                        // Machine is busy — a PC sender owns the job. `$I`
+                        // here draws error:8 into ITS ack stream and desyncs
+                        // its character count. Go passive-ready and identify
+                        // once the machine returns to Idle.
+                        self.state = .ready;
+                        self.needs_info = true;
                     }
                 } else if (self.parser.status.state == .alarm) {
                     if (gh_session.alarmLocksController(self.parser.status.alarm_code)) {

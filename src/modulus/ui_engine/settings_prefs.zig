@@ -700,13 +700,53 @@ pub const ZbCap = struct {
     pub const color: u8 = 0x80;
 };
 
+/// zigbee2mqtt-style expose keys (UI paint + host stub).
+pub const ZbExpose = struct {
+    pub const state: u32 = 1 << 0;
+    pub const brightness: u32 = 1 << 1;
+    pub const color_temp: u32 = 1 << 2;
+    pub const color_xy: u32 = 1 << 3;
+    pub const effect: u32 = 1 << 4;
+    pub const min_brightness: u32 = 1 << 5;
+    pub const max_brightness: u32 = 1 << 6;
+    pub const light_type: u32 = 1 << 7;
+    pub const power: u32 = 1 << 8;
+    pub const current: u32 = 1 << 9;
+    pub const voltage: u32 = 1 << 10;
+    pub const energy: u32 = 1 << 11;
+    pub const countdown: u32 = 1 << 12;
+    pub const child_lock: u32 = 1 << 13;
+    pub const contact: u32 = 1 << 14;
+    pub const device_temperature: u32 = 1 << 15;
+    pub const power_outage_count: u32 = 1 << 16;
+    pub const trigger_count: u32 = 1 << 17;
+    pub const battery: u32 = 1 << 18;
+    pub const cover: u32 = 1 << 19;
+};
+
 pub const ZbDevSnap = struct {
     id: [17]u8 = .{0} ** 17,
     model: [17]u8 = .{0} ** 17,
     /// Devdb description snippet (purpose keywords); empty when unknown.
     desc: [40]u8 = .{0} ** 40,
     caps: u8 = 0,
+    /// Non-zero: explicit Z2M expose set; zero → derive from caps in zb_exposes.
+    exposes: u32 = 0,
     level: u8 = 0,
+    min_level: u8 = 1,
+    max_level: u8 = 254,
+    color_temp_mireds: u16 = 250,
+    color_x: u16 = 0,
+    color_y: u16 = 0,
+    effect_idx: u8 = 0,
+    light_type_idx: u8 = 0,
+    countdown_s: u32 = 0,
+    child_lock: bool = false,
+    device_temp_c_x10: i16 = 0,
+    power_outage_count: u16 = 0,
+    trigger_count: u16 = 0,
+    /// 255 = unknown (no battery expose).
+    battery_pct: u8 = 255,
     rssi: i8 = 0,
     lqi: u8 = 0,
     short_addr: u16 = 0,
@@ -838,7 +878,13 @@ pub const WirelessPrefs = struct {
     pub const stub_auth = [_][]const u8{ "WPA2", "WPA2", "Open" };
     pub const stub_bt = [_][]const u8{ "Pendant-BLE", "M5-Keyboard" };
     pub const stub_peers = [_][]const u8{ "AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02" };
-    pub const stub_zb = [_][]const u8{ "Shop switch", "Door contact" };
+    pub const stub_zb = [_][]const u8{
+        "Ambient Lamp",
+        "Baby Light Plug",
+        "Ambient Puck",
+        "Door Light",
+        "Bedroom Terrace Door",
+    };
     pub const stub_th = [_][]const u8{ "Matter plug" };
 
     pub fn apLabel(self: *const WirelessPrefs, i: usize) []const u8 {
@@ -870,16 +916,60 @@ pub const WirelessPrefs = struct {
         return .{};
     }
     pub fn softFillZbSnaps(self: *WirelessPrefs) void {
+        const E = ZbExpose;
         var i: usize = 0;
         while (i < self.live_zb_n) : (i += 1) {
-            var s: ZbDevSnap = .{ .caps = ZbCap.onoff, .short_addr = @intCast(0x1000 + i), .lqi = 180, .rssi = -55 };
+            var s: ZbDevSnap = .{ .caps = ZbCap.onoff, .short_addr = @intCast(0x1000 + i), .lqi = 124, .rssi = -55 };
             if (i == 0) {
-                setDraftField(&s.desc, "smart switch wall module");
+                s.caps = ZbCap.onoff | ZbCap.power | ZbCap.meter;
+                s.exposes = E.state | E.countdown | E.power | E.current | E.voltage | E.energy | E.child_lock;
+                s.sensors_seen = 0x0f;
+                s.volt_raw = 118;
+                s.curr_raw = 210;
+                s.power_raw = 45;
+                s.energy_raw = 1280;
+                setDraftField(&s.desc, "smart plug with metering");
             } else if (i == 1) {
+                s.caps = ZbCap.onoff | ZbCap.power | ZbCap.meter;
+                s.exposes = E.state | E.countdown | E.power | E.current | E.voltage | E.energy | E.child_lock;
+                s.sensors_seen = 0x0f;
+                s.volt_raw = 120;
+                s.curr_raw = 520;
+                s.power_raw = 62;
+                s.energy_raw = 3420;
+                s.countdown_s = 3600;
+                setDraftField(&s.desc, "baby room smart plug");
+            } else if (i == 2) {
+                s.caps = ZbCap.onoff | ZbCap.level | ZbCap.color;
+                s.exposes = E.state | E.brightness | E.color_temp | E.color_xy | E.effect | E.min_brightness |
+                    E.max_brightness | E.light_type;
+                s.level = 180;
+                s.color_temp_mireds = 300;
+                s.color_x = 22000;
+                s.color_y = 28000;
+                s.effect_idx = 0;
+                s.light_type_idx = 0;
+                setDraftField(&s.desc, "RGBW puck light");
+            } else if (i == 3) {
+                s.caps = ZbCap.onoff | ZbCap.level | ZbCap.color;
+                s.exposes = E.state | E.brightness | E.color_temp | E.effect;
+                s.level = 254;
+                s.color_temp_mireds = 370;
+                s.effect_idx = 1;
+                setDraftField(&s.desc, "door accent light");
+            } else if (i == 4) {
                 s.caps = ZbCap.sensor;
+                s.exposes = E.contact | E.device_temperature | E.power_outage_count | E.trigger_count | E.battery;
                 s.zone_seen = true;
                 s.zone_status = 0;
+                s.device_temp_c_x10 = 215;
+                s.power_outage_count = 2;
+                s.trigger_count = 1847;
+                s.battery_pct = 63;
+                s.lqi = 98;
                 setDraftField(&s.desc, "door window contact sensor");
+            } else {
+                setDraftField(&s.desc, "zigbee end device");
             }
             self.live_zb_snap[i] = s;
         }
@@ -1903,6 +1993,11 @@ pub const StoragePrefs = struct {
                 return .need_sd;
             },
         };
+    }
+    pub fn formatSdStub(self: *StoragePrefs) bool {
+        self.sd = .mounted;
+        self.syncMounted();
+        return true;
     }
     pub fn mount(self: *StoragePrefs) void {
         self.sd = .mounted;

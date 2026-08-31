@@ -9,3 +9,14 @@ dependencies:
   chmorgan/esp-file-iterator: 1.0.0
   espressif/bmi270_sensor: ^0.1.1
   espressif/esp-dsp: ^1.8.2
+  # USB mass-storage class driver — mounts a plugged G-code stick at /usb for
+  # the M-Panel USB Drive tool. usb_host_install() alone only enumerates; MSC
+  # + FATFS is what makes files visible.
+  espressif/usb_host_msc: ^1.1.0
+  # Pinned. We do not use esp_lvgl_port (BSP_CONFIG_NO_GRAPHIC_LIB=1, LVGL is
+  # not linked) but the BSP declares `espressif/esp_lvgl_port: ^2`, so the
+  # solver still fetches and COMPILES it. 2.9.0 uses
+  # esp_lcd_dpi_panel_event_callbacks_t.on_frame_buf_complete, which does not
+  # exist in IDF 6.0.1 — adding any new dependency re-solves the graph and
+  # breaks the build. Hold it at the last version that compiles here.
+  espressif/esp_lvgl_port: '~2.4.0'

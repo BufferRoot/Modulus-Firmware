@@ -78,17 +78,24 @@ fn ppaRotate(
 
 const ui_sound_tick: u8 = 0;
 
-const log_ui = std.log.scoped(.ui_rt);
+/// Diagnostics use esp_rom_printf. std.log.* is a panic on this target — no
+/// logFn in std_options and std_options_debug_io = std.Io.failing.
+extern "c" fn esp_rom_printf(fmt: [*:0]const u8, ...) c_int;
+
+/// Edge detector for job start/stop so the outcome is reported exactly once.
+var g_job_was_active: bool = false;
 
 const PsramAllocator = struct {
     fn alloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
         const bytes = @max(alignment.toByteUnits(), @sizeOf(usize));
         const p = heap_caps_aligned_alloc(bytes, len, cap_spiram | cap_8bit) orelse blk: {
             // Falling back to internal RAM for an Engine-sized allocation is a
-            // big deal on a part with ~185 KB internal free — say so loudly
-            // rather than letting it surface later as a mystery OOM.
+            // big deal on a part with ~185 KB internal free — say so loudly.
+            // esp_rom_printf, NOT std.log: this target has no logFn and
+            // std_options_debug_io is std.Io.failing, so std.log.* panics with
+            // "reached unreachable code".
             const q = heap_caps_aligned_alloc(bytes, len, cap_8bit) orelse return null;
-            log_ui.warn("PSRAM alloc failed for {d} B — fell back to internal RAM", .{len});
+            _ = esp_rom_printf("[ui] PSRAM alloc failed for %d B - using internal RAM\n", @as(c_int, @intCast(len)));
             break :blk q;
         };
         return @ptrCast(p);
@@ -298,6 +305,44 @@ fn stateName(st: u8) []const u8 {
     };
 }
 
+/// Job streamer → UI. Progress drives the dashboard strip; a terminal fault
+/// must surface, otherwise a refused MPG claim looks identical to a job that
+/// simply has not started yet.
+fn mirrorJobStatus(eng: *Engine) void {
+    if (!device_runtime.isBootOk()) return;
+    const js = device_runtime.jobStatus();
+
+    if (js.active) {
+        eng.cnc.job_progress = @as(f32, @floatFromInt(js.per_mille)) / 1000.0;
+        eng.cnc.sd_streaming = true;
+    } else if (g_job_was_active) {
+        eng.cnc.sd_streaming = false;
+    }
+
+    // Edge-triggered: report the outcome once, when the job leaves active.
+    if (g_job_was_active and !js.active) {
+        switch (js.fault) {
+            .none => {
+                if (js.terminal == .complete) {
+                    eng.cnc.job_progress = 1.0;
+                    eng.showSnackbar("Job complete");
+                } else {
+                    // Operator abort: terminal without a fault.
+                    eng.showSnackbar("Job aborted");
+                }
+            },
+            .claim_denied => eng.showSnackbarError("MPG refused - is a sender streaming?"),
+            .mpg_lost => eng.showSnackbarError("MPG lost - job stopped"),
+            .controller_error => eng.showSnackbarError("Controller rejected a line"),
+            .ack_timeout => eng.showSnackbarError("Link timeout - feed held"),
+            .read_failed => eng.showSnackbarError("USB read failed - job stopped"),
+        }
+        eng.job_armed = false;
+        eng.requestFull();
+    }
+    g_job_was_active = js.active;
+}
+
 /// LVGL `modulus_ui_status_bar_update` + overrides — machine-reported fields win.
 fn mirrorCncStatus(eng: *Engine) void {
     if (!device_runtime.isBootOk()) return;
@@ -450,6 +495,7 @@ export fn modulus_zig_ui_frame() void {
     if (eng.screen != .boot) {
         mirrorLiveTelemetry(eng);
         mirrorCncStatus(eng);
+        mirrorJobStatus(eng);
         device_ui_bridge.drainConsole(eng);
         device_ui_bridge.pollPrefsFlush(eng);
         device_ui_bridge.applyBrightVol(&eng.prefs);

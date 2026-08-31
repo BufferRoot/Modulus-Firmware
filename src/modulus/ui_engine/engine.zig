@@ -30,6 +30,15 @@ const md3_catalog = @import("md3_catalog.zig");
 const expr = @import("widgets_expressive.zig");
 const settings_menu = @import("settings_menu.zig");
 const quick_settings = @import("quick_settings.zig");
+const m_panel = @import("m_panel.zig");
+const m_panel_terminal = @import("m_panel_terminal.zig");
+const m_panel_usb = @import("m_panel_usb.zig");
+const m_panel_probe = @import("m_panel_probe.zig");
+const m_panel_sd = @import("m_panel_sd.zig");
+const m_panel_zigbee = @import("m_panel_zigbee.zig");
+const zb_exposes = @import("zb_exposes.zig");
+const sd_volume = @import("sd_volume.zig");
+const usb_volume = @import("usb_volume.zig");
 
 const settings_form = @import("settings_form.zig");
 const gestures = @import("gestures.zig");
@@ -165,6 +174,10 @@ pub const Engine = struct {
     wifi_disconnect_sink: ?*const fn () void = null,
     wireless_cmd_sink: ?*const fn (*Engine, WirelessUiCmd) void = null,
     stor_sys_sink: ?*const fn (*Engine, StorSysUiCmd) void = null,
+    /// A USB G-code file is armed as the pending job. Set by the Load confirm,
+    /// cleared by the bridge when the streamer goes terminal. While set, Cycle
+    /// Start starts the pendant stream instead of a plain controller resume.
+    job_armed: bool = false,
     /// Pending CNC cmd waiting on confirm dialog OK.
     pending_cnc: ?CncUiCmd = null,
     prefs: settings_prefs.Prefs = .{},
@@ -337,6 +350,33 @@ pub const Engine = struct {
     power_fx: spring.Spring = spring.Spring.effects(0),
     power_confirm_fx: spring.Spring = spring.Spring.effects(0),
     settings_confirm_fx: spring.Spring = spring.Spring.effects(0),
+    /// M-Panel launcher (FAB) and active tool window index (`0xff` = none).
+    m_panel_open: bool = false,
+    m_panel_scroll: i32 = 0,
+    m_panel_fx: spring.Spring = spring.Spring.effects(0),
+    m_panel_layout: m_panel.Layout = .{},
+    m_panel_tool_layout: m_panel.ToolLayout = .{},
+    m_panel_term_layout: m_panel_terminal.Layout = .{},
+    m_panel_term_scroll: i32 = 0,
+    m_panel_term_auto_scroll: bool = true,
+    m_panel_usb_layout: m_panel_usb.Layout = .{},
+    m_panel_usb_scroll: i32 = 0,
+    m_panel_usb_catalog: usb_volume.Catalog = .{},
+    m_panel_probe_layout: m_panel_probe.Layout = .{},
+    m_panel_sd_layout: m_panel_sd.Layout = .{},
+    m_panel_sd_scroll: i32 = 0,
+    m_panel_sd_catalog: sd_volume.Catalog = .{},
+    m_panel_sd_import_len: u8 = 0,
+    m_panel_sd_import_path: [sd_volume.path_len]u8 = .{0} ** sd_volume.path_len,
+    m_panel_sd_footer_overflow_seen: bool = false,
+    m_panel_zb_layout: m_panel_zigbee.Layout = .{},
+    m_panel_zb_scroll: i32 = 0,
+    m_panel_zb_level_drag: bool = false,
+    m_panel_zb_menu_dev: u8 = 0xff,
+    m_panel_zb_menu_field: u8 = 0,
+    m_panel_zb_menu_rect: geom.Rect = .{},
+    m_panel_zb_menu_scroll: usize = 0,
+    m_panel_tool: u8 = 0xff,
     needs_full_repaint: bool = true,
     /// After full paint on settings: present window AABB only (margins unchanged).
     settings_present_window: bool = false,
@@ -573,14 +613,131 @@ pub const Engine = struct {
         defer settings_form.unbindWidgetMotion();
         self.syncStatusBarChrome();
         dashboard.paint(&self.logical, self.theme, self.cnc);
-        // CNC Zero/Home confirms open from dashboard — must paint here (not only settings).
+        self.invalidateAnimGates();
+        if (self.m_panel_tool != 0xff) {
+            if (self.m_panel_tool == @intFromEnum(m_panel.ToolId.terminal)) {
+                self.m_panel_term_layout = m_panel_terminal.paint(
+                    &self.logical,
+                    self.theme,
+                    .{
+                        .term_log = self.qs_term[0..self.qs_term_len],
+                        .mdi_line = self.qs_mdi[0..self.qs_mdi_len],
+                        .scroll_px = self.m_panel_term_scroll,
+                        .input_focused = self.pad.open and self.pad.target == .qs_mdi,
+                        .auto_scroll = self.m_panel_term_auto_scroll,
+                    },
+                    self.m_panel_fx.value,
+                );
+            } else if (self.m_panel_tool == @intFromEnum(m_panel.ToolId.usb)) {
+                self.m_panel_usb_layout = m_panel_usb.paint(
+                    &self.logical,
+                    self.theme,
+                    .{
+                        .catalog = &self.m_panel_usb_catalog,
+                        .usb_ready = self.prefs.storage.usb_host,
+                        .scroll_px = self.m_panel_usb_scroll,
+                    },
+                    self.m_panel_fx.value,
+                );
+            } else if (self.m_panel_tool == @intFromEnum(m_panel.ToolId.probe)) {
+                var pbuf: [16]u8 = undefined;
+                const x10 = self.prefs.dash.probe_zoff_x10;
+                const plate = std.fmt.bufPrint(&pbuf, "{d}.{d}", .{ x10 / 10, x10 % 10 }) catch "1.0";
+                self.m_panel_probe_layout = m_panel_probe.paint(
+                    &self.logical,
+                    self.theme,
+                    .{
+                        .plate_mm = plate,
+                        .busy = self.probe_busy_frames > 0,
+                        .plate_focused = self.pad.open and self.pad.target == .dash_probe_zoff,
+                    },
+                    self.m_panel_fx.value,
+                );
+            } else if (self.m_panel_tool == @intFromEnum(m_panel.ToolId.sd)) {
+                var cap_buf: [48]u8 = undefined;
+                const cap = self.prefs.storage.sdCapacity(&cap_buf);
+                self.m_panel_sd_layout = m_panel_sd.paint(
+                    &self.logical,
+                    self.theme,
+                    .{
+                        .catalog = &self.m_panel_sd_catalog,
+                        .sd_mounted = self.prefs.storage.sd == .mounted,
+                        .sd_failed = self.prefs.storage.sd == .failed,
+                        .capacity = cap,
+                        .scroll_px = self.m_panel_sd_scroll,
+                        .anim_t = @as(f32, @floatFromInt(self.frame_n % 120)) / 120.0,
+                        .busy = self.busy_frames > 0,
+                    },
+                    self.m_panel_fx.value,
+                );
+                if (self.m_panel_sd_layout.footer_overflow) {
+                    if (!self.m_panel_sd_footer_overflow_seen) {
+                        self.showSnackbar(m_panel_sd.footer_overflow_message);
+                        self.m_panel_sd_footer_overflow_seen = true;
+                    }
+                } else {
+                    self.m_panel_sd_footer_overflow_seen = false;
+                }
+            } else if (self.m_panel_tool == @intFromEnum(m_panel.ToolId.zigbee)) {
+                self.m_panel_zb_layout = m_panel_zigbee.paint(
+                    &self.logical,
+                    self.theme,
+                    .{
+                        .wireless = &self.prefs.wireless,
+                        .scroll_px = self.m_panel_zb_scroll,
+                        .anim_t = @as(f32, @floatFromInt(self.frame_n % 120)) / 120.0,
+                        .menu_dev = self.m_panel_zb_menu_dev,
+                        .menu_field = @enumFromInt(self.m_panel_zb_menu_field),
+                    },
+                    self.m_panel_fx.value,
+                );
+                if (self.m_panel_zb_menu_dev != 0xff) {
+                    const field: zb_exposes.Field = @enumFromInt(self.m_panel_zb_menu_field);
+                    const snap = self.prefs.wireless.zbSnap(self.m_panel_zb_menu_dev);
+                    const sel: usize = switch (field) {
+                        .effect => snap.effect_idx,
+                        .light_type => snap.light_type_idx,
+                        else => 0,
+                    };
+                    self.m_panel_zb_menu_rect = m_panel_zigbee.layoutMenu(self.m_panel_zb_layout, self.m_panel_zb_menu_dev, field);
+                    m_panel_zigbee.paintMenu(
+                        &self.logical,
+                        self.theme,
+                        self.m_panel_zb_menu_rect,
+                        field,
+                        sel,
+                        self.m_panel_zb_menu_scroll,
+                    );
+                }
+            } else {
+                self.m_panel_tool_layout = m_panel.paintTool(
+                    &self.logical,
+                    self.theme,
+                    self.m_panel_tool,
+                    self.m_panel_fx.value,
+                );
+            }
+        } else if (self.m_panel_open) {
+            self.m_panel_layout = m_panel.paint(
+                &self.logical,
+                self.theme,
+                self.m_panel_scroll,
+                self.m_panel_fx.value,
+                self.prefs.storage.usb_host,
+            );
+        }
+
+        // LAST. Confirms open from the dashboard (DRO Zero / Home-all) *and*
+        // from M-Panel tools (USB Load/Delete/Eject). Painting this before the
+        // tool card left the dialog underneath it: the click handler still
+        // consumed taps, so the buttons looked dead and the next tap hit the
+        // invisible scrim and dismissed the dialog.
         if (self.settings_confirm != .none) {
             const c = settings_form.paintPowerConfirm(&self.logical, self.theme, self.settings_confirm, self.settings_confirm_fx.value);
             self.settings_confirm_ok = c.ok;
             self.settings_confirm_cancel = c.cancel;
             self.settings_confirm_card = c.card;
         }
-        self.invalidateAnimGates();
     }
 
     /// Wall clock + WCS label from prefs (LVGL status bar data path).
@@ -642,6 +799,7 @@ pub const Engine = struct {
     fn liveDashboard(self: *const Engine) bool {
         if (self.screen != .dashboard) return false;
         if (self.settings_confirm != .none) return false;
+        if (self.m_panel_open or self.m_panel_tool != 0xff) return false;
         const closed: f32 = @floatFromInt(quick_settings.closedY());
         return self.sheet_y.value >= closed - 1;
     }
@@ -1244,6 +1402,7 @@ pub const Engine = struct {
             &self.power_fx,
             &self.power_confirm_fx,
             &self.settings_confirm_fx,
+            &self.m_panel_fx,
             &self.cnc_overlay_fx,
             &self.dash_overlay_fx,
             &self.pin_overlay_fx,
@@ -2586,15 +2745,7 @@ pub const Engine = struct {
                     self.pad.kb_full = self.prefs.system.kb_full;
                     self.requestFull();
                 },
-                .primary => {
-                    if (self.probe_busy_frames > 0) {
-                        self.showSnackbar("Probe busy");
-                        return;
-                    }
-                    self.probe_busy_frames = 45; // ~1.5s @ 30Hz
-                    self.showSnackbar("Z-plate probe started");
-                    self.requestFull();
-                },
+                .primary => self.startZPlateProbe(),
                 else => {},
             },
             .mpg => switch (h) {
@@ -2672,8 +2823,75 @@ pub const Engine = struct {
                 }
                 self.showSnackbar("SD ejected");
             },
+            .format_sd => {
+                self.startBusy(60);
+                if (self.emitStorSys(.format_sd)) {
+                    self.showSnackbar("SD formatted");
+                } else if (self.prefs.storage.formatSdStub()) {
+                    self.showSnackbar("SD formatted");
+                } else {
+                    self.showSnackbarError("Format failed");
+                }
+                self.m_panel_sd_catalog.clear();
+                if (self.prefs.storage.sd == .mounted) {
+                    _ = self.m_panel_sd_catalog.ensureLayout(true);
+                    self.m_panel_sd_catalog.refresh(true);
+                }
+                self.requestFull();
+            },
+            .eject_usb => {
+                if (self.m_panel_usb_catalog.safeEject()) {
+                    self.showSnackbar("USB ejected - safe to remove");
+                    self.requestFull();
+                } else {
+                    self.showSnackbarError("Eject failed");
+                }
+            },
+            .load_usb_job => {
+                // Arm only. The pendant is the sender: nothing goes to the
+                // controller here, and no MPG claim is made. Cycle Start does
+                // both. A tap in a file manager must never start motion.
+                const sel = self.m_panel_usb_catalog.selected;
+                if (sel >= self.m_panel_usb_catalog.count) {
+                    self.showSnackbarError("No file selected");
+                    return;
+                }
+                if (self.emitStorSys(.{ .job_load_usb = sel })) {
+                    const name = self.m_panel_usb_catalog.nameSlice(sel);
+                    // job_name is a slice into job_name_buf — copy, don't alias.
+                    const n = @min(name.len, self.cnc.job_name_buf.len - 1);
+                    @memset(&self.cnc.job_name_buf, 0);
+                    @memcpy(self.cnc.job_name_buf[0..n], name[0..n]);
+                    self.cnc.job_name = self.cnc.job_name_buf[0..n];
+                    self.m_panel_usb_catalog.loaded = sel;
+                    self.job_armed = true;
+                    self.showSnackbar("Job loaded - press Cycle Start");
+                    self.requestFull();
+                } else {
+                    self.showSnackbarError("Load failed");
+                }
+            },
+            .delete_usb_file => {
+                if (self.m_panel_usb_catalog.deleteSelected(self.prefs.storage.usb_host)) {
+                    self.showSnackbar("Deleted");
+                    self.requestFull();
+                } else {
+                    self.showSnackbarError("Delete failed");
+                }
+            },
             .import_settings => {
-                if (self.emitStorSys(.import_settings)) {
+                if (self.m_panel_sd_import_len > 0) {
+                    const path = self.m_panel_sd_import_path[0..self.m_panel_sd_import_len];
+                    if (self.emitStorSys(.{ .import_settings_from = path })) {
+                        self.showSnackbar("Settings restored");
+                    } else {
+                        self.prefs.applyImportStub();
+                        self.applyPrefs();
+                        self.showSnackbar("Settings restored");
+                    }
+                    self.m_panel_sd_import_len = 0;
+                    self.m_panel_sd_catalog.refresh(self.prefs.storage.sd == .mounted);
+                } else if (self.emitStorSys(.import_settings)) {
                     self.showSnackbar("Settings imported");
                 } else {
                     self.prefs.applyImportStub();
@@ -3662,7 +3880,29 @@ pub const Engine = struct {
                 @memset(&self.qs_mdi, 0);
                 @memcpy(self.qs_mdi[0..n], txt[0..n]);
                 self.qs_mdi_len = n;
-                self.repaintQs();
+                self.pad.clear();
+                if (self.m_panel_tool == @intFromEnum(m_panel.ToolId.terminal)) {
+                    self.afterPadDismiss();
+                    self.requestFull();
+                } else {
+                    self.repaintQs();
+                }
+                return;
+            },
+            .usb_rename => {
+                if (!usb_volume.isGcodeName(txt)) {
+                    self.showSnackbarError("Use .nc/.gcode/.ngc/.tap");
+                    return;
+                }
+                if (self.m_panel_usb_catalog.renameSelected(self.prefs.storage.usb_host, txt)) {
+                    self.showSnackbar("Renamed");
+                } else {
+                    self.showSnackbarError("Rename failed");
+                }
+                self.pad.clear();
+                self.afterPadDismiss();
+                self.requestFull();
+                return;
             },
             .search => {
                 self.syncSearchFromPad();
@@ -3987,6 +4227,11 @@ pub const Engine = struct {
                 self.requestFull();
                 return;
             }
+            return;
+        }
+
+        if (self.screen == .dashboard and (self.m_panel_open or self.m_panel_tool != 0xff)) {
+            self.handleMPanelClick(x, y);
             return;
         }
 
@@ -4730,12 +4975,18 @@ pub const Engine = struct {
             .none => {},
         }
         const ov = dashboard.hitOverrides(x, y, self.cnc);
+        if (ov.kind == .fab) {
+            self.pulseKey("ovr.fab.p");
+            self.toggleMPanel();
+            self.requestFull();
+            return;
+        }
         if (ov.kind != .none) {
             // LVGL sends ±10 / 0 (reset) realtime deltas — never a target pct.
             const delta: i8 = switch (ov.kind) {
                 .plus => 10,
                 .minus => -10,
-                .reset, .none => 0,
+                .reset, .none, .fab => 0,
             };
             self.pulseKey(override_widget.pressKey(ov.which, ov.kind));
             self.applyOverride(ov.which, delta);
@@ -4758,6 +5009,15 @@ pub const Engine = struct {
                         if (self.emitCnc(.stop)) self.showSnackbar("Cycle stopped") else self.showSnackbarError("CNC not ready");
                     } else if (blocked) {
                         self.showSnackbarError("Blocked");
+                    } else if (self.job_armed) {
+                        // A job is armed from the USB tool: Cycle Start claims
+                        // MPG and begins streaming from the pendant rather than
+                        // sending a bare ~ to resume the controller's own run.
+                        if (self.emitStorSys(.job_start)) {
+                            self.showSnackbar("Starting job");
+                        } else {
+                            self.showSnackbarError("Machine must be Idle");
+                        }
                     } else if (self.emitCncOrConfirm(.cycle, .dash_cycle, .cycle_start)) {
                         if (self.pending_cnc == null) self.showSnackbar("Cycle start");
                     }
@@ -5029,6 +5289,508 @@ pub const Engine = struct {
         self.requestFull();
     }
 
+    fn probeUiActive(self: *const Engine) bool {
+        return self.extra_overlay == .probe or
+            self.m_panel_tool == @intFromEnum(m_panel.ToolId.probe);
+    }
+
+    fn startZPlateProbe(self: *Engine) void {
+        if (self.probe_busy_frames > 0) {
+            self.showSnackbar("Probe busy");
+            return;
+        }
+        if (self.probe_start_sink) |start| {
+            _ = start(0);
+        }
+        self.probe_busy_frames = 45;
+        self.showSnackbar("Z-plate probe started");
+        self.requestFull();
+    }
+
+    fn closeToolToDashboard(self: *Engine) void {
+        self.m_panel_tool = 0xff;
+        self.m_panel_open = false;
+        self.m_panel_term_scroll = 0;
+        self.m_panel_usb_scroll = 0;
+        self.m_panel_sd_scroll = 0;
+        self.m_panel_zb_scroll = 0;
+        self.m_panel_zb_level_drag = false;
+        self.m_panel_sd_import_len = 0;
+        self.m_panel_sd_footer_overflow_seen = false;
+        self.m_panel_fx.value = 1;
+        self.requestFull();
+    }
+
+    /// Snap terminal scrollback to tail when auto-scroll is on.
+    pub fn terminalFollowTail(self: *Engine) void {
+        if (!self.m_panel_term_auto_scroll) return;
+        if (self.m_panel_tool != @intFromEnum(m_panel.ToolId.terminal)) return;
+        const view_h = self.m_panel_term_layout.log_view.h;
+        if (view_h <= 0) return;
+        self.m_panel_term_scroll = m_panel_terminal.scrollMax(self.qs_term[0..self.qs_term_len], view_h);
+    }
+
+    fn sendTerminalMdi(self: *Engine) void {
+        const line = self.qs_mdi[0..self.qs_mdi_len];
+        if (line.len == 0 or line.len > 120) return;
+        if (self.gcode_sink) |sink| sink(line);
+        quick_settings.termAppend(&self.qs_term, &self.qs_term_len, line, true);
+        @memset(&self.qs_mdi, 0);
+        self.qs_mdi_len = 0;
+        self.terminalFollowTail();
+        self.requestFull();
+    }
+
+    fn handleTerminalClick(self: *Engine, x: i32, y: i32) void {
+        const h = m_panel_terminal.hit(self.m_panel_term_layout, x, y);
+        switch (h) {
+            .none => {},
+            .back, .scrim => self.returnToMPanelFromTool(),
+            .exit => self.closeToolToDashboard(),
+            .auto_scroll => {
+                self.m_panel_term_auto_scroll = !self.m_panel_term_auto_scroll;
+                if (self.m_panel_term_auto_scroll) self.terminalFollowTail();
+                self.requestFull();
+            },
+            .input => self.openTextPad(.qs_mdi, "MDI / $ command", self.qs_mdi[0..self.qs_mdi_len]),
+            .send => self.sendTerminalMdi(),
+        }
+    }
+
+    fn handleUsbClick(self: *Engine, x: i32, y: i32) void {
+        const h = m_panel_usb.hit(self.m_panel_usb_layout, x, y);
+        switch (h.kind) {
+            .none => {},
+            .back, .scrim => self.returnToMPanelFromTool(),
+            .exit => self.closeToolToDashboard(),
+            .row => {
+                if (!self.m_panel_usb_catalog.volumeReady(self.prefs.storage.usb_host)) return;
+                self.m_panel_usb_catalog.setSelected(h.index);
+                self.requestFull();
+            },
+            .load => {
+                if (!self.m_panel_usb_catalog.volumeReady(self.prefs.storage.usb_host) or
+                    self.m_panel_usb_catalog.selected >= self.m_panel_usb_catalog.count) return;
+                // Loading a job moves the machine once Cycle Start is pressed —
+                // confirm before committing.
+                self.openSettingsConfirm(.load_usb_job);
+            },
+            .view => {
+                if (!self.m_panel_usb_catalog.volumeReady(self.prefs.storage.usb_host) or
+                    self.m_panel_usb_catalog.selected >= self.m_panel_usb_catalog.count) return;
+                // TODO: G-code viewer pane (m_panel_usb_view.zig) — the C
+                // line-reader (modulus_usb_volume_read_lines) is in place.
+                self.showSnackbar("Viewer not built yet");
+            },
+            .delete => {
+                if (!self.m_panel_usb_catalog.volumeReady(self.prefs.storage.usb_host) or
+                    self.m_panel_usb_catalog.selected >= self.m_panel_usb_catalog.count) return;
+                self.openSettingsConfirm(.delete_usb_file);
+            },
+            .rename => {
+                if (!self.m_panel_usb_catalog.volumeReady(self.prefs.storage.usb_host)) return;
+                if (self.m_panel_usb_catalog.selected >= self.m_panel_usb_catalog.count) return;
+                const name = self.m_panel_usb_catalog.nameSlice(self.m_panel_usb_catalog.selected);
+                self.openTextPad(.usb_rename, "Rename G-code", name);
+            },
+            .eject => {
+                if (!self.prefs.storage.usb_host or self.m_panel_usb_catalog.ejected) return;
+                self.openSettingsConfirm(.eject_usb);
+            },
+        }
+    }
+
+    fn handleProbeClick(self: *Engine, x: i32, y: i32) void {
+        const h = m_panel_probe.hit(self.m_panel_probe_layout, x, y);
+        switch (h) {
+            .none => {},
+            .back, .scrim => self.returnToMPanelFromTool(),
+            .exit => self.closeToolToDashboard(),
+            .plate => {
+                var seed_buf: [16]u8 = undefined;
+                const x10 = self.prefs.dash.probe_zoff_x10;
+                const seed = std.fmt.bufPrint(&seed_buf, "{d}.{d}", .{ x10 / 10, x10 % 10 }) catch "1.0";
+                self.pad.openPad(.number, .dash_probe_zoff, "Plate thickness (mm)", seed);
+                self.pad.kb_full = self.prefs.system.kb_full;
+                self.requestFull();
+            },
+            .start => self.startZPlateProbe(),
+        }
+    }
+
+    fn handleSdClick(self: *Engine, x: i32, y: i32) void {
+        const h = m_panel_sd.hit(self.m_panel_sd_layout, x, y);
+        switch (h.kind) {
+            .none => {},
+            .back, .scrim => self.returnToMPanelFromTool(),
+            .exit => self.closeToolToDashboard(),
+            .folder => {
+                if (h.index >= sd_volume.folders.len) return;
+                self.m_panel_sd_catalog.folder = @enumFromInt(h.index);
+                self.m_panel_sd_scroll = 0;
+                self.m_panel_sd_catalog.refresh(self.prefs.storage.sd == .mounted);
+                self.requestFull();
+            },
+            .row => {
+                if (!self.m_panel_sd_catalog.volumeReady(self.prefs.storage.sd == .mounted)) return;
+                self.m_panel_sd_catalog.setSelected(h.index);
+                self.requestFull();
+            },
+            .mount => {
+                self.startBusy(45);
+                if (self.emitStorSys(.mount)) {
+                    self.showSnackbar(switch (self.prefs.storage.sd) {
+                        .mounted => "SD mounted",
+                        .failed => "Mount failed - try Format (FAT32)",
+                        else => "SD not present",
+                    });
+                } else {
+                    self.prefs.storage.mount();
+                    self.showSnackbar("SD mounted");
+                }
+                if (self.prefs.storage.sd == .mounted) {
+                    _ = self.m_panel_sd_catalog.ensureLayout(true);
+                    self.m_panel_sd_catalog.refresh(true);
+                }
+                self.requestFull();
+            },
+            .format => self.openSettingsConfirm(.format_sd),
+            .backup => {
+                if (self.prefs.storage.sd != .mounted) {
+                    self.showSnackbar("Insert SD card");
+                    return;
+                }
+                var path_buf: [sd_volume.path_len]u8 = undefined;
+                const path = sd_volume.Catalog.makeBackupPath(&path_buf) orelse {
+                    self.showSnackbarError("Backup path failed");
+                    return;
+                };
+                if (self.emitStorSys(.{ .export_settings_to = path })) {
+                    self.showSnackbar(self.prefs.storage.backupExportDetail());
+                } else {
+                    switch (self.prefs.storage.exportSettingsStub()) {
+                        .ok => self.showSnackbar("Settings backed up"),
+                        .need_sd => self.showSnackbar("Insert SD card"),
+                        .failed => self.showSnackbarError("Backup failed"),
+                    }
+                }
+                self.m_panel_sd_catalog.refresh(true);
+                self.requestFull();
+            },
+            .restore => {
+                if (self.prefs.storage.sd != .mounted) {
+                    self.showSnackbar("Insert SD card");
+                    return;
+                }
+                if (self.m_panel_sd_catalog.selected >= self.m_panel_sd_catalog.count) return;
+                var path_buf: [sd_volume.path_len]u8 = undefined;
+                const path = self.m_panel_sd_catalog.selectedPath(&path_buf) orelse return;
+                const n = @min(path.len, self.m_panel_sd_import_path.len);
+                @memcpy(self.m_panel_sd_import_path[0..n], path[0..n]);
+                self.m_panel_sd_import_len = @intCast(n);
+                self.openSettingsConfirm(.import_settings);
+            },
+            .export_log => {
+                if (self.prefs.storage.sd != .mounted) {
+                    self.showSnackbar("Insert SD card");
+                    return;
+                }
+                var path_buf: [sd_volume.path_len]u8 = undefined;
+                const path = sd_volume.Catalog.makeLogPath(&path_buf) orelse {
+                    self.showSnackbarError("Log path failed");
+                    return;
+                };
+                if (self.emitStorSys(.{ .export_diag_to = path })) {
+                    self.showSnackbar(self.prefs.storage.diagDetail());
+                } else {
+                    switch (self.prefs.storage.exportDiagnosticsStub()) {
+                        .ok => self.showSnackbar("Log exported"),
+                        .need_sd => self.showSnackbar("Insert SD card"),
+                        .failed => self.showSnackbarError("Export failed"),
+                    }
+                }
+                self.m_panel_sd_catalog.folder = .logs;
+                self.m_panel_sd_catalog.refresh(true);
+                self.requestFull();
+            },
+            .clear_cache => {
+                _ = self.emitStorSys(.clear_cache);
+                self.showSnackbar("Cache cleared");
+                self.m_panel_sd_catalog.refresh(self.prefs.storage.sd == .mounted);
+                self.requestFull();
+            },
+            .delete => {
+                if (!self.m_panel_sd_catalog.volumeReady(self.prefs.storage.sd == .mounted)) return;
+                if (self.m_panel_sd_catalog.deleteSelected(self.prefs.storage.sd == .mounted)) {
+                    self.showSnackbar("Deleted");
+                    self.requestFull();
+                }
+            },
+        }
+    }
+
+    fn startZbPermitJoin(self: *Engine) void {
+        if (!self.prefs.wireless.zigbee) {
+            self.prefs.wireless.zigbee = true;
+            self.applyPrefs();
+        }
+        if (!self.prefs.wireless.zb_joined) {
+            self.showSnackbar("Join hub first");
+            return;
+        }
+        if (self.emitWireless(.scan)) {
+            self.showSnackbar("Permit join - pairing open");
+        } else {
+            self.prefs.wireless.startZbScan();
+            self.showSnackbar("Permit join...");
+        }
+        self.requestFull();
+    }
+
+    fn closeZbMenu(self: *Engine) void {
+        self.m_panel_zb_menu_dev = 0xff;
+        self.m_panel_zb_menu_scroll = 0;
+    }
+
+    fn handleZigbeeClick(self: *Engine, x: i32, y: i32) void {
+        if (self.m_panel_zb_menu_dev != 0xff) {
+            const field: zb_exposes.Field = @enumFromInt(self.m_panel_zb_menu_field);
+            const labs = zb_exposes.dropdownLabels(field);
+            if (self.m_panel_zb_menu_rect.contains(x, y)) {
+                if (expr.menuIndexAt(self.m_panel_zb_menu_rect, self.m_panel_zb_menu_scroll, labs.len, y)) |idx| {
+                    const dev = self.m_panel_zb_menu_dev;
+                    switch (field) {
+                        .effect => {
+                            if (!self.emitWireless(.{ .zb_effect = .{ .idx = dev, .effect = @intCast(idx) } })) {
+                                if (dev < self.prefs.wireless.live_zb_n) self.prefs.wireless.live_zb_snap[dev].effect_idx = @intCast(idx);
+                            }
+                        },
+                        .light_type => {
+                            if (!self.emitWireless(.{ .zb_light_type = .{ .idx = dev, .typ = @intCast(idx) } })) {
+                                if (dev < self.prefs.wireless.live_zb_n) self.prefs.wireless.live_zb_snap[dev].light_type_idx = @intCast(idx);
+                            }
+                        },
+                        else => {},
+                    }
+                    self.closeZbMenu();
+                    self.requestFull();
+                }
+                return;
+            }
+            self.closeZbMenu();
+        }
+
+        const h = m_panel_zigbee.hit(self.m_panel_zb_layout, x, y);
+        switch (h.kind) {
+            .none => {},
+            .back, .scrim => {
+                self.closeZbMenu();
+                self.returnToMPanelFromTool();
+            },
+            .exit => {
+                self.closeZbMenu();
+                self.closeToolToDashboard();
+            },
+            .permit_join => self.startZbPermitJoin(),
+            .refresh => {
+                if (!self.prefs.wireless.zigbee) {
+                    self.showSnackbar("Enable Zigbee first");
+                    return;
+                }
+                _ = self.emitWireless(.zb_refresh);
+                self.showSnackbar("Refreshing devices");
+                self.requestFull();
+            },
+            .join_hub => {
+                if (!self.prefs.wireless.zigbee) self.prefs.wireless.zigbee = true;
+                if (!self.emitWireless(.zb_join)) {
+                    self.prefs.wireless.joinZigbee();
+                    self.showSnackbar("Zigbee hub joined");
+                } else {
+                    self.prefs.wireless.zb_join_pending = true;
+                    self.showSnackbar("Joining hub...");
+                }
+                self.applyPrefs();
+                self.requestFull();
+            },
+            .toggle => {
+                if (!self.emitWireless(.{ .zb_toggle = h.dev })) {
+                    if (h.dev < self.prefs.wireless.zb_dev_on.len) {
+                        self.prefs.wireless.zb_dev_on[h.dev] = !self.prefs.wireless.zb_dev_on[h.dev];
+                    }
+                }
+                self.requestFull();
+            },
+            .child_lock => {
+                const on = if (h.dev < self.prefs.wireless.live_zb_n) !self.prefs.wireless.live_zb_snap[h.dev].child_lock else false;
+                if (!self.emitWireless(.{ .zb_child_lock = .{ .idx = h.dev, .on = on } })) {
+                    if (h.dev < self.prefs.wireless.live_zb_n) self.prefs.wireless.live_zb_snap[h.dev].child_lock = on;
+                }
+                self.requestFull();
+            },
+            .slider => {
+                const pct: u8 = @intCast(h.aux);
+                switch (h.field) {
+                    .brightness => {
+                        const level = zb_exposes.levelFromSliderPct(pct);
+                        if (h.dev < self.prefs.wireless.live_zb_n) self.prefs.wireless.live_zb_snap[h.dev].level = level;
+                        _ = self.emitWireless(.{ .zb_level = .{ .idx = h.dev, .level = level } });
+                    },
+                    .color_temp => {
+                        const mireds = zb_exposes.colorTempFromPct(pct);
+                        if (h.dev < self.prefs.wireless.live_zb_n) self.prefs.wireless.live_zb_snap[h.dev].color_temp_mireds = mireds;
+                        _ = self.emitWireless(.{ .zb_color_temp = .{ .idx = h.dev, .mireds = mireds } });
+                    },
+                    .countdown => {
+                        const sec = zb_exposes.countdownFromPct(pct);
+                        if (h.dev < self.prefs.wireless.live_zb_n) self.prefs.wireless.live_zb_snap[h.dev].countdown_s = sec;
+                        _ = self.emitWireless(.{ .zb_countdown = .{ .idx = h.dev, .seconds = sec } });
+                    },
+                    .min_brightness => {
+                        const level = zb_exposes.levelFromSliderPct(pct);
+                        if (h.dev < self.prefs.wireless.live_zb_n) self.prefs.wireless.live_zb_snap[h.dev].min_level = level;
+                        _ = self.emitWireless(.{ .zb_min_level = .{ .idx = h.dev, .level = level } });
+                    },
+                    .max_brightness => {
+                        const level = zb_exposes.levelFromSliderPct(pct);
+                        if (h.dev < self.prefs.wireless.live_zb_n) self.prefs.wireless.live_zb_snap[h.dev].max_level = level;
+                        _ = self.emitWireless(.{ .zb_max_level = .{ .idx = h.dev, .level = level } });
+                    },
+                    else => {},
+                }
+                self.requestFull();
+            },
+            .color_xy => {
+                const x_pct: u8 = @intCast(h.aux >> 8);
+                const y_pct: u8 = @intCast(h.aux & 0xff);
+                const cx: u16 = @intCast((@as(u32, x_pct) * 65535) / 100);
+                const cy: u16 = @intCast((@as(u32, y_pct) * 65535) / 100);
+                if (h.dev < self.prefs.wireless.live_zb_n) {
+                    self.prefs.wireless.live_zb_snap[h.dev].color_x = cx;
+                    self.prefs.wireless.live_zb_snap[h.dev].color_y = cy;
+                }
+                _ = self.emitWireless(.{ .zb_color_xy = .{ .idx = h.dev, .x = cx, .y = cy } });
+                self.requestFull();
+            },
+            .dropdown => {
+                self.m_panel_zb_menu_dev = h.dev;
+                self.m_panel_zb_menu_field = @intFromEnum(h.field);
+                self.m_panel_zb_menu_scroll = 0;
+                self.requestFull();
+            },
+            .cover => {
+                _ = self.emitWireless(.{ .zb_cover = .{ .idx = h.dev, .op = @intCast(h.aux) } });
+                self.requestFull();
+            },
+            .identify => {
+                if (self.emitWireless(.{ .zb_identify = h.dev })) {
+                    self.showSnackbar("Identify...");
+                } else {
+                    self.showSnackbar("Identify (host demo)");
+                }
+            },
+            .remove => {
+                if (self.emitWireless(.{ .zb_remove = h.dev })) {
+                    self.showSnackbar("Device removed");
+                } else if (h.dev < self.prefs.wireless.live_zb_n) {
+                    self.prefs.wireless.live_zb_n -|= 1;
+                    self.prefs.wireless.zb_dev_n = self.prefs.wireless.live_zb_n;
+                    self.showSnackbar("Device removed");
+                }
+                self.requestFull();
+            },
+            .exposes => {
+                self.showSnackbar("Exposes - see Settings > Wireless");
+            },
+        }
+    }
+
+    fn openMPanel(self: *Engine) void {
+        self.m_panel_tool = 0xff;
+        self.m_panel_open = true;
+        self.m_panel_scroll = 0;
+        snapEnter(&self.m_panel_fx);
+        self.requestFull();
+    }
+
+    fn closeMPanel(self: *Engine) void {
+        self.m_panel_open = false;
+        self.m_panel_scroll = 0;
+        self.m_panel_fx.value = 1;
+        self.requestFull();
+    }
+
+    fn toggleMPanel(self: *Engine) void {
+        if (self.m_panel_open) self.closeMPanel() else self.openMPanel();
+    }
+
+    fn openMPanelTool(self: *Engine, index: u8) void {
+        if (index >= m_panel.tools.len) return;
+        if (!m_panel.toolEnabled(index, self.prefs.storage.usb_host)) return;
+        self.m_panel_open = false;
+        self.m_panel_scroll = 0;
+        self.m_panel_tool = index;
+        self.m_panel_term_scroll = 0;
+        self.m_panel_usb_scroll = 0;
+        self.m_panel_sd_scroll = 0;
+        if (index == @intFromEnum(m_panel.ToolId.usb)) {
+            self.m_panel_usb_catalog.refresh(self.prefs.storage.usb_host);
+        }
+        if (index == @intFromEnum(m_panel.ToolId.sd)) {
+            if (self.prefs.storage.sd == .mounted) {
+                _ = self.m_panel_sd_catalog.ensureLayout(true);
+            }
+            self.m_panel_sd_catalog.refresh(self.prefs.storage.sd == .mounted);
+        }
+        if (index == @intFromEnum(m_panel.ToolId.zigbee)) {
+            if (!self.prefs.wireless.zigbee) self.prefs.wireless.zigbee = true;
+            _ = self.emitWireless(.zb_refresh);
+        }
+        if (index == @intFromEnum(m_panel.ToolId.terminal) and self.m_panel_term_auto_scroll) {
+            self.terminalFollowTail();
+        }
+        snapEnter(&self.m_panel_fx);
+        self.requestFull();
+    }
+
+    fn returnToMPanelFromTool(self: *Engine) void {
+        self.m_panel_tool = 0xff;
+        self.m_panel_term_scroll = 0;
+        self.m_panel_usb_scroll = 0;
+        self.m_panel_sd_scroll = 0;
+        self.m_panel_zb_scroll = 0;
+        self.m_panel_zb_level_drag = false;
+        self.closeZbMenu();
+        self.m_panel_open = true;
+        snapEnter(&self.m_panel_fx);
+        self.requestFull();
+    }
+
+    fn handleMPanelClick(self: *Engine, x: i32, y: i32) void {
+        if (self.m_panel_tool != 0xff) {
+            if (self.m_panel_tool == @intFromEnum(m_panel.ToolId.terminal)) {
+                self.handleTerminalClick(x, y);
+            } else if (self.m_panel_tool == @intFromEnum(m_panel.ToolId.usb)) {
+                self.handleUsbClick(x, y);
+            } else if (self.m_panel_tool == @intFromEnum(m_panel.ToolId.probe)) {
+                self.handleProbeClick(x, y);
+            } else if (self.m_panel_tool == @intFromEnum(m_panel.ToolId.sd)) {
+                self.handleSdClick(x, y);
+            } else if (self.m_panel_tool == @intFromEnum(m_panel.ToolId.zigbee)) {
+                self.handleZigbeeClick(x, y);
+            } else if (m_panel.hitTool(self.m_panel_tool_layout, x, y)) {
+                self.returnToMPanelFromTool();
+            }
+            return;
+        }
+        const h = m_panel.hit(self.m_panel_layout, x, y, self.prefs.storage.usb_host);
+        switch (h.kind) {
+            .none => {},
+            .scrim, .close => self.closeMPanel(),
+            .tile => self.openMPanelTool(h.index),
+        }
+    }
+
     /// Deprecated name — use `openQuickSettings`.
     pub fn openSettingsSheet(self: *Engine) void {
         self.openQuickSettings();
@@ -5121,6 +5883,14 @@ pub const Engine = struct {
             return true;
         }
         const closed = self.sheet_y.target >= @as(f32, @floatFromInt(quick_settings.closedY())) - 1;
+        if (self.m_panel_tool != 0xff) {
+            self.returnToMPanelFromTool();
+            return true;
+        }
+        if (self.m_panel_open) {
+            self.closeMPanel();
+            return true;
+        }
         if (!closed) {
             self.closeQuickSettings();
             return true;
@@ -5178,6 +5948,51 @@ pub const Engine = struct {
     }
 
     pub fn nudgeScroll(self: *Engine, dy: f32) void {
+        if (self.m_panel_tool == @intFromEnum(m_panel.ToolId.terminal)) {
+            const max_s = self.m_panel_term_layout.scroll_max;
+            if (max_s > 0) {
+                const next = self.m_panel_term_scroll - i32FromF(dy);
+                self.m_panel_term_scroll = std.math.clamp(next, 0, max_s);
+                self.requestFull();
+            }
+            return;
+        }
+        if (self.m_panel_tool == @intFromEnum(m_panel.ToolId.usb)) {
+            const max_s = self.m_panel_usb_layout.scroll_max;
+            if (max_s > 0) {
+                const next = self.m_panel_usb_scroll - i32FromF(dy);
+                self.m_panel_usb_scroll = std.math.clamp(next, 0, max_s);
+                self.requestFull();
+            }
+            return;
+        }
+        if (self.m_panel_tool == @intFromEnum(m_panel.ToolId.sd)) {
+            const max_s = self.m_panel_sd_layout.scroll_max;
+            if (max_s > 0) {
+                const next = self.m_panel_sd_scroll - i32FromF(dy);
+                self.m_panel_sd_scroll = std.math.clamp(next, 0, max_s);
+                self.requestFull();
+            }
+            return;
+        }
+        if (self.m_panel_tool == @intFromEnum(m_panel.ToolId.zigbee)) {
+            const max_s = self.m_panel_zb_layout.scroll_max;
+            if (max_s > 0) {
+                const next = self.m_panel_zb_scroll - i32FromF(dy);
+                self.m_panel_zb_scroll = std.math.clamp(next, 0, max_s);
+                self.requestFull();
+            }
+            return;
+        }
+        if (self.m_panel_open and self.m_panel_tool == 0xff) {
+            const max_s = self.m_panel_layout.scroll_max;
+            if (max_s > 0) {
+                const next = self.m_panel_scroll - i32FromF(dy);
+                self.m_panel_scroll = std.math.clamp(next, 0, max_s);
+                self.requestFull();
+            }
+            return;
+        }
         if (self.dash_overlay == .arrange and self.dash_arr_pick >= 0) {
             const max_s = self.dash_arr_layout.scroll_max;
             if (max_s > 0) {
@@ -5345,23 +6160,40 @@ pub const Engine = struct {
         const mach_str_moving = self.springStep(self.mach_str_fx.step(dt_sec));
         const extra_moving = self.springStep(self.extra_fx.step(dt_sec));
         if (self.probe_busy_frames > 0) {
+            const probe_ui = self.probeUiActive();
             if (self.probe_busy_sink) |busy| {
                 if (!busy()) {
                     self.probe_busy_frames = 0;
-                    if (self.extra_overlay == .probe) {
+                    if (probe_ui) {
                         self.showSnackbar("Probe done");
-                        self.requestSettingsPresent();
+                        if (self.extra_overlay == .probe) {
+                            self.requestSettingsPresent();
+                        } else {
+                            self.requestFull();
+                        }
                     }
-                } else {
-                    self.requestSettingsPresent();
+                } else if (probe_ui) {
+                    if (self.extra_overlay == .probe) {
+                        self.requestSettingsPresent();
+                    } else {
+                        self.requestFull();
+                    }
                 }
             } else {
                 self.probe_busy_frames -= 1;
-                if (self.probe_busy_frames == 0 and self.extra_overlay == .probe) {
+                if (self.probe_busy_frames == 0 and probe_ui) {
                     self.showSnackbar("Z-plate probe done");
-                    self.requestSettingsPresent();
-                } else if (self.extra_overlay == .probe) {
-                    self.requestSettingsPresent();
+                    if (self.extra_overlay == .probe) {
+                        self.requestSettingsPresent();
+                    } else {
+                        self.requestFull();
+                    }
+                } else if (probe_ui) {
+                    if (self.extra_overlay == .probe) {
+                        self.requestSettingsPresent();
+                    } else {
+                        self.requestFull();
+                    }
                 }
             }
         }
@@ -6572,7 +7404,7 @@ test "wireless bt espnow zigbee stubs" {
 
     eng.prefs.wireless.joinZigbee();
     try std.testing.expect(eng.prefs.wireless.zb_joined);
-    try std.testing.expectEqual(@as(u8, 2), eng.prefs.wireless.zb_dev_n);
+    try std.testing.expectEqual(@as(u8, 5), eng.prefs.wireless.zb_dev_n);
     eng.prefs.wireless.leaveZigbee();
     try std.testing.expectEqual(@as(u8, 0), eng.prefs.wireless.zb_dev_n);
 
@@ -7260,7 +8092,7 @@ test "override taps send grblHAL deltas to the driver sink" {
             .reset => if (reset_y < 0) {
                 reset_y = y;
             },
-            .none => {},
+            .none, .fab => {},
         }
     }
     try std.testing.expect(plus_y >= 0 and minus_y >= 0 and reset_y >= 0);

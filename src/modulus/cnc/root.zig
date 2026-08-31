@@ -15,6 +15,8 @@ pub const settings_dump = @import("settings_dump.zig");
 pub const mach3 = @import("mach3/root.zig");
 pub const masso = @import("masso/root.zig");
 pub const probe_engine = @import("probe_engine.zig");
+/// Pendant-as-sender G-code streamer over the grblHAL MPG port.
+pub const job_stream = @import("job_stream.zig");
 
 test {
     std.testing.refAllDecls(@This());

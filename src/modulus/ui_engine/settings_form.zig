@@ -927,6 +927,12 @@ pub const PowerConfirm = enum {
     factory,
     language,
     eject_sd,
+    format_sd,
+    eject_usb,
+    /// Load the selected USB G-code as the pending job (Cycle Start runs it).
+    load_usb_job,
+    /// Irreversible file delete on the USB volume.
+    delete_usb_file,
     import_settings,
     mach_reset,
     maint_reset,
@@ -1087,6 +1093,10 @@ pub fn paintPowerConfirm(
         .factory => "Factory reset?",
         .language => "Apply language?",
         .eject_sd => "Eject SD card?",
+        .format_sd => "Format SD card?",
+        .eject_usb => "Eject USB drive?",
+        .load_usb_job => "Load this G-code as the job?",
+        .delete_usb_file => "Delete this G-code file?",
         .import_settings => "Import settings?",
         .mach_reset => "Reset machine settings?",
         .maint_reset => "Reset maintenance counters?",
@@ -1115,6 +1125,10 @@ pub fn paintPowerConfirm(
         .factory => "Erases all settings. No undo.",
         .language => "UI strings refresh after apply.",
         .eject_sd => "Unmount before removing the card.",
+        .format_sd => "Erases all files on the card.",
+        .eject_usb => "Flush writes and unmount before unplugging.",
+        .load_usb_job => "Sends the file to the controller as the pending job.",
+        .delete_usb_file => "Permanently removes the file from the USB drive.",
         .import_settings => "Replace current prefs from SD JSON.",
         .mach_reset => "Restores work envelope and soft limits.",
         .maint_reset => "Clears travel, spindle time, and run time.",
@@ -1143,6 +1157,10 @@ pub fn paintPowerConfirm(
         .factory => "Device restarts after erase.",
         .language => "",
         .eject_sd => "Safe to remove after eject completes.",
+        .format_sd => "Recreates modulus folders after format.",
+        .eject_usb => "Safe to remove after eject completes.",
+        .load_usb_job => "Press Cycle Start on the pendant to run it.",
+        .delete_usb_file => "No undo.",
         .import_settings => "PIN hash and Wi-Fi password stay local.",
         .mach_reset => "Maintenance counters reset too.",
         .maint_reset => "No undo.",
@@ -1165,6 +1183,10 @@ pub fn paintPowerConfirm(
         .factory => "Erase & reset",
         .language => "Apply",
         .eject_sd => "Eject",
+        .format_sd => "Format",
+        .eject_usb => "Eject",
+        .load_usb_job => "Load",
+        .delete_usb_file => "Delete",
         .import_settings => "Import",
         .mach_reset => "Reset",
         .maint_reset => "Clear",
@@ -1184,7 +1206,7 @@ pub fn paintPowerConfirm(
         .mach_slim => "Change",
         .pin_boot_on, .pin_slp_on => "Enable",
     };
-    const destructive = kind == .shutdown or kind == .factory or kind == .mach_reset or kind == .maint_reset or kind == .power_reset or kind == .display_reset or kind == .dashboard_reset or kind == .cnc_reset or kind == .clear_pin or kind == .wireless_reset or kind == .mach_slim;
+    const destructive = kind == .shutdown or kind == .factory or kind == .format_sd or kind == .mach_reset or kind == .maint_reset or kind == .power_reset or kind == .display_reset or kind == .dashboard_reset or kind == .cnc_reset or kind == .clear_pin or kind == .wireless_reset or kind == .mach_slim;
     const t = std.math.clamp(enter_t, 0, 1);
 
     widgets.fillScrim(logical, theme);

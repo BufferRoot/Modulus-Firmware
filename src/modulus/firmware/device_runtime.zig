@@ -25,6 +25,7 @@ const dispatcher_mod = @import("../hal/transport/dispatcher.zig");
 const device_ui_mod = @import("../ui/device_ui.zig");
 const dro_batch = @import("../ui/dro_batch.zig");
 const monotonic_ms = @import("../core/monotonic_ms.zig");
+const job_runner = @import("job_runner.zig");
 
 const timer_mod = if (build_options.device_nvs)
     struct {
@@ -94,6 +95,95 @@ pub fn systemTick(tick_ms: u32) void {
     if (!boot_ok) return;
     rx_ring.drainInto(&rt.drv);
     rt.systemTick(tick_ms);
+    // After the parse drain so this tick's acks are already counted.
+    g_job.pump(&rt.drv, tick_ms);
+}
+
+// --- G-code job streaming (pendant acts as sender over the MPG port) -------
+//
+// State lives here, not in the UI: the pump runs on Core 1 at ~100 Hz and must
+// keep running while the operator is on any screen.
+
+var g_job: job_runner.JobRunner = .{};
+
+/// Diagnostics go through esp_rom_printf, NOT std.log.
+///
+/// This target has no `logFn` in std_options and sets
+/// `std_options_debug_io = std.Io.failing`, so any `std.log.*` call panics with
+/// "reached unreachable code". A std.log.warn added here for job diagnostics
+/// crashed the pendant the instant Load was pressed.
+extern "c" fn esp_rom_printf(fmt: [*:0]const u8, ...) c_int;
+
+/// Arm a USB catalog entry. Does not move the machine.
+pub fn jobLoadUsb(index: u8) bool {
+    const ok = g_job.load(index);
+    _ = esp_rom_printf(
+        "[job] loadUsb idx=%d lines=%d ok=%d\n",
+        @as(c_int, index),
+        @as(c_int, @intCast(g_job.stream.total_lines)),
+        @as(c_int, if (ok) 1 else 0),
+    );
+    return ok;
+}
+
+/// Cycle Start with a job armed: claim MPG, then stream once `|MPG:1` lands.
+pub fn jobStart() bool {
+    if (!boot_ok) return false;
+    const st = blk: {
+        rt.drv.lockSnapshot();
+        defer rt.drv.unlockSnapshot();
+        break :blk rt.drv.snapshot.state;
+    };
+    const idle = st == .idle;
+    const ok = g_job.requestStart(&rt.drv, monotonic_ms.nowMs(), idle);
+    _ = esp_rom_printf(
+        "[job] start state=%d idle=%d stream=%d supported=%d ok=%d\n",
+        @as(c_int, @intFromEnum(st)),
+        @as(c_int, if (idle) 1 else 0),
+        @as(c_int, @intFromEnum(g_job.stream.state)),
+        @as(c_int, if (rt.drv.engine.supportsJobStream()) 1 else 0),
+        @as(c_int, if (ok) 1 else 0),
+    );
+    return ok;
+}
+
+pub fn jobLogArmed(armed: bool) void {
+    _ = esp_rom_printf("[job] cycleStart armed=%d\n", @as(c_int, if (armed) 1 else 0));
+}
+
+pub fn jobHold() void {
+    g_job.stream.hold();
+    rt.drv.engine.sendFeedHold();
+}
+
+pub fn jobResume() void {
+    g_job.stream.unhold(monotonic_ms.nowMs());
+    rt.drv.engine.sendCycleStart();
+}
+
+/// Abort: soft reset stops motion, then the pump releases MPG.
+pub fn jobAbort() void {
+    g_job.stream.abort();
+    rt.drv.engine.sendReset();
+}
+
+pub const JobStatus = struct {
+    active: bool,
+    per_mille: u16,
+    state: job_runner.State,
+    fault: job_runner.Fault,
+    /// `.complete` or `.aborted` from the job that just finished.
+    terminal: job_runner.State,
+};
+
+pub fn jobStatus() JobStatus {
+    return .{
+        .active = g_job.isActive(),
+        .per_mille = g_job.progressPerMille(),
+        .state = g_job.state(),
+        .fault = g_job.fault(),
+        .terminal = g_job.lastTerminal(),
+    };
 }
 
 /// Called from `serial_rx` task only — stage bytes, never touch the engine here.

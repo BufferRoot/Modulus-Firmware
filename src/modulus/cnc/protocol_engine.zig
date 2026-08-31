@@ -88,6 +88,31 @@ pub const Engine = struct {
         }
     }
 
+    /// Monotonic ack counters for the job streamer. grblHAL only — the other
+    /// protocols have no per-line ack contract, so a job cannot be streamed to
+    /// them and the counters stay zero.
+    pub fn okCount(self: *const Engine) u32 {
+        return switch (self.active) {
+            .linux_cnc, .mach3_mach4, .masso => 0,
+            else => self.grbl.ok_count,
+        };
+    }
+
+    pub fn errCount(self: *const Engine) u32 {
+        return switch (self.active) {
+            .linux_cnc, .mach3_mach4, .masso => 0,
+            else => self.grbl.err_count,
+        };
+    }
+
+    /// True when this protocol supports pendant-as-sender job streaming.
+    pub fn supportsJobStream(self: *const Engine) bool {
+        return switch (self.active) {
+            .linux_cnc, .mach3_mach4, .masso => false,
+            else => true,
+        };
+    }
+
     pub fn setPollInterval(self: *Engine, ms: u16) void {
         self.grbl.setPollInterval(ms);
         self.lcnc.setPollInterval(ms);

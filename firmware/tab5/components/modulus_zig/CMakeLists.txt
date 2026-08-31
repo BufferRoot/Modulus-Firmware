@@ -151,7 +151,7 @@ idf_component_register(
              esp_driver_ppa esp_mm
              esp_timer mbedtls esp-tls bt
              espressif__m5stack_tab5 espressif__bmi270 espressif__esp-dsp espressif__esp_lcd_touch
-             ${MODULUS_LVGL_REQ} esp_lcd espressif__usb
+             ${MODULUS_LVGL_REQ} esp_lcd espressif__usb espressif__usb_host_msc
              esp_wifi esp_netif esp_event espressif__esp_hosted
     PRIV_REQUIRES chmorgan__esp-audio-player
 )

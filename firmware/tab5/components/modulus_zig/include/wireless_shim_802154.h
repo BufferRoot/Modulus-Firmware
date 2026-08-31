@@ -103,6 +103,7 @@ void modulus_wireless_zb_note_device_sensor(uint16_t short_addr, uint16_t cluste
 void modulus_wireless_zb_note_device_lqi(uint16_t short_addr, uint8_t lqi,
                                                 int8_t rssi);
 bool modulus_wireless_zigbee_device_cover(int idx, uint8_t op);
+bool modulus_wireless_zigbee_device_color(int idx, uint8_t mode, uint16_t a, uint16_t b);
 bool modulus_wireless_zigbee_device_ic_add(int idx, const char *code_hex);
 bool modulus_wireless_zigbee_device_rename(int idx, const char *name);
 bool modulus_wireless_zigbee_device_read_sensors(int idx);

@@ -194,6 +194,7 @@ extern fn modulus_storage_get_mem_info(out: *modulus_mem_info_t) void;
 extern fn modulus_storage_export_diagnostics(path: [*:0]const u8) bool;
 extern fn modulus_storage_clear_ui_cache() void;
 extern fn modulus_storage_is_usb_host_enabled() bool;
+extern fn modulus_storage_usb_volume_mounted() bool;
 
 extern fn modulus_security_init() void;
 extern fn modulus_security_has_pin() bool;

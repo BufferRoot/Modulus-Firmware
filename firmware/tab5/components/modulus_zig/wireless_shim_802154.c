@@ -904,6 +904,15 @@ bool modulus_wireless_zigbee_device_cover(int idx, uint8_t op)
     return modulus_wireless_zb_cover(&d, op);
 }
 
+bool modulus_wireless_zigbee_device_color(int idx, uint8_t mode, uint16_t a, uint16_t b)
+{
+    modulus_zb_device_t d = {};
+    if (!modulus_wireless_zigbee_device_get(idx, &d) || !modulus_wireless_zigbee_can_control()) {
+        return false;
+    }
+    return modulus_wireless_zb_color(&d, mode, a, b);
+}
+
 bool modulus_wireless_zigbee_device_ic_add(int idx, const char *code_hex)
 {
     modulus_zb_device_t d = {};
