@@ -29,9 +29,22 @@ endif()
 if(EXISTS "$ENV{IDF_PATH}/components/esp_driver_sdmmc/legacy/include/driver/sdmmc_host.h")
     idf_component_get_property(_modulus_hosted espressif__esp_hosted COMPONENT_LIB)
     if(TARGET ${_modulus_hosted})
-        target_include_directories(${_modulus_hosted} PRIVATE
+        # COMPONENT_LIB is an INTERFACE target when the component ships no
+        # source files, and CMake rejects PRIVATE on those:
+        #   "target_include_directories may only set INTERFACE properties on
+        #    INTERFACE targets"
+        # Which form esp_hosted takes depends on the resolved version, so pick
+        # the keyword from the target type rather than assuming.
+        # Reported as BufferRoot/Modulus-Firmware#2.
+        get_target_property(_modulus_hosted_type ${_modulus_hosted} TYPE)
+        if(_modulus_hosted_type STREQUAL "INTERFACE_LIBRARY")
+            set(_modulus_hosted_scope INTERFACE)
+        else()
+            set(_modulus_hosted_scope PRIVATE)
+        endif()
+        target_include_directories(${_modulus_hosted} ${_modulus_hosted_scope}
             "$ENV{IDF_PATH}/components/esp_driver_sdmmc/legacy/include")
-        target_link_libraries(${_modulus_hosted} PRIVATE
+        target_link_libraries(${_modulus_hosted} ${_modulus_hosted_scope}
             idf::esp_driver_sdmmc idf::esp_driver_sdio idf::sdmmc)
     endif()
 endif()

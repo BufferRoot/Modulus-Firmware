@@ -1,10 +1,18 @@
 ## Modulus Tab5 — Zig host scaffold (UI/HAL device backends land incrementally)
+##
+## Versions are pinned, and dependencies.lock is TRACKED. An unpinned solve
+## against the live registry is what made this tree unbuildable on a clean
+## clone (BufferRoot/Modulus-Firmware#2): components drifted to releases that
+## assume a newer ESP-IDF than 6.0.1. Widen a constraint only after building.
 dependencies:
-  idf: '>=6.0'
+  idf: '>=6.0,<7.0'
   espressif/m5stack_tab5: '*'
   espressif/esp_hosted: 2.11.4
+  # Must match the esp_hosted host version; IDF 6.0.1 does NOT bundle this.
   espressif/esp_wifi_remote:
     override_path: ../components/espressif__esp_wifi_remote
+  # 1.0.7 has an ignored top-level const in a pointer cast; GCC 15 treats it as
+  # an error under this component's warnings-as-errors. Hold until upstream fixes.
   chmorgan/esp-audio-player: 1.0.7
   chmorgan/esp-file-iterator: 1.0.0
   espressif/bmi270_sensor: ^0.1.1

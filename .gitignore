@@ -2,8 +2,17 @@
 firmware/**/build/
 firmware/**/sdkconfig
 firmware/**/sdkconfig.old
-firmware/**/dependencies.lock
 firmware/**/managed_components/
+
+# NOT dependencies.lock — it is tracked on purpose.
+#
+# Ignoring it meant every clone re-solved the component graph against the live
+# registry instead of the versions we build with, so the repo was unbuildable
+# by anyone but the machine that had a stale local solve. That is the root
+# cause of BufferRoot/Modulus-Firmware#2: esp_lvgl_port drifted to 2.9.0
+# (needs on_frame_buf_complete, absent in IDF 6.0.1), esp-audio-player 1.0.7
+# broke on GCC 15, and esp_wifi_remote resolved differently.
+# managed_components/ stays ignored — it is the cache the lock reproduces.
 
 # Vendor reference clone
 vendor/
