@@ -1,6 +1,14 @@
 # Modulus Tab5 — ESP-IDF 6.0 defaults (Zig host image scaffold)
 CONFIG_IDF_TARGET="esp32p4"
-CONFIG_COMPILER_WARNINGS_AS_ERRORS=y
+# NOTE: CONFIG_COMPILER_WARNINGS_AS_ERRORS was removed in ESP-IDF 6 and used to
+# sit here doing nothing — the build printed
+#   NOTE: unknown kconfig symbol 'COMPILER_WARNINGS_AS_ERRORS' assigned to 'y'
+# and carried on, so this project has had no warnings-as-errors for as long as
+# it has been on IDF 6. IDF 6 has no global equivalent; the closest is leaving
+# COMPILER_DISABLE_DEFAULT_ERRORS at its default (n), which keeps IDF's own
+# default set of warnings promoted to errors. Stated explicitly so it cannot
+# drift silently again.
+CONFIG_COMPILER_DISABLE_DEFAULT_ERRORS=n
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # Tab5 retail P4 is rev 1.x (not 3.x) — match C++ Modulus Firmware sdkconfig
 CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
@@ -39,7 +47,16 @@ CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=40960
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
 # Match C++ Modulus Firmware / m5stack_tab5 BSP
-CONFIG_BSP_LCD_COLOR_FORMAT_RGB565=y
+# NOTE: CONFIG_BSP_LCD_COLOR_FORMAT_RGB565 used to sit here and does not exist —
+# the m5stack_tab5 BSP has no colour-format Kconfig at all; the DPI panel is
+# hardcoded to LCD_COLOR_FMT_RGB565 in bsp_display.c. Harmless but it read as
+# though it were configuring something. Removed, same as the dead
+# COMPILER_WARNINGS_AS_ERRORS above.
+#
+# CONFIG_LV_COLOR_DEPTH* is left in place deliberately: LVGL is no longer
+# linked under CONFIG_MODULUS_ZIG_UI_ENGINE (BSP_CONFIG_NO_GRAPHIC_LIB=1), but
+# these are still valid symbols for the non-ZIG_UI build, which the #else
+# branches in display_shim/touch_shim keep alive.
 CONFIG_LV_COLOR_DEPTH_16=y
 CONFIG_LV_COLOR_DEPTH=16
 # 4.5 MiB factory — Zig UI omits LVGL widget/fonts/icons ROM (was 5 MiB).
@@ -139,8 +156,11 @@ CONFIG_DSP_OPTIMIZED=y
 CONFIG_DSP_OPTIMIZATION=1
 CONFIG_DSP_MAX_FFT_SIZE=4096
 
-# P4 PPA hardware rotation: esp_lvgl_port uses PPA SRM when sw_rotate=true (display_shim).
-CONFIG_LVGL_PORT_ENABLE_PPA=y
+# NOTE: CONFIG_LVGL_PORT_ENABLE_PPA was here and is now a dead symbol —
+# esp_lvgl_port is not built at all under CONFIG_MODULUS_ZIG_UI_ENGINE
+# (BSP_CONFIG_NO_GRAPHIC_LIB=1 in firmware/tab5/CMakeLists.txt), so its Kconfig
+# is never sourced. PPA rotation is ours now: ppa_shim.c owns its own PPA SRM
+# client and fb.zig calls it through fb.hw_rotate. Nothing to enable here.
 
 # Dual DPI framebuffers — Zig flips with draw_bitmap(FB addr) for tear-free present.
 # (+1.8 MB PSRAM; avoids composing into the live scanout).

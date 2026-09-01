@@ -2,6 +2,8 @@
 /sdkconfig
 /sdkconfig.old
 /managed_components/
-/dependencies.lock
+# NOT /dependencies.lock — tracked on purpose, same reason as the root
+# .gitignore: an untracked lock lets a clean clone re-solve the component
+# graph against the live registry instead of the versions we build with.
 /.cache/
 /compile_commands.json
