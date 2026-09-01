@@ -2,6 +2,10 @@
   <img src="assets/modulus-firmware-hero.png" alt="Modulus Firmware — Tab5 CNC pendant" width="720">
 </p>
 
+<p align="center">
+  <strong>English</strong> · <a href="README.de.md">Deutsch</a>
+</p>
+
 # Modulus Firmware
 
 **Version:** 3.1.0  
@@ -12,6 +16,20 @@
 **License:** [MIT](LICENSE)
 
 **One Device, One Software. Real control for any machine — no lag, no brand lock-in, no compromise.**
+
+## Why this feature branch exists
+
+The ESP32-C6 is the Tab5's wireless coprocessor, but updating it traditionally
+requires a separate USB/bootloader connection. This branch adds a guarded
+**C6 Update** page to the P4 user interface so a compatible C6 application can
+be selected from the Tab5 SD card and transferred through the existing
+ESP-Hosted SDIO link.
+
+The intended maintenance sequence is therefore **P4 first, C6 second**: install
+the P4 firmware that contains the updater, boot Modulus normally, then use
+**M Panel → C6 Update** to update the C6. An image check, an explicit
+confirmation step, a progress display, and a post-update restart button keep
+the operation deliberate; C6 flashing never starts automatically.
 
 Handheld DRO + MPG **client** on Tab5 — Zig dual-core anti-lag firmware talking to grblHAL (and other engines) over ESP-NOW or RS-485. It does not replace your motion controller.
 
@@ -165,13 +183,64 @@ Download **v3.1.0** assets (bootloader + partition table + app per target):
 2. USB cables + drivers for each chip
 3. Unzip each package into its own folder (commands below assume you `cd` into that folder)
 
-**Flash order (first bring-up):** C6 → P4 → S3 bridge → NanoH2 (optional). Power-cycle the Tab5 after C6+P4. Keep the machine E-Stop in reach.
+**Recommended order for this feature branch:** P4 → C6 through the on-device
+updater → S3 bridge → NanoH2 (optional). The separate C6 USB procedure is a
+recovery path, not the normal update method. Keep the machine E-Stop in reach.
 
 COM ports on your PC may differ — change `-p COMx` to match Device Manager.
 
-### 1. Tab5 C6 (wireless slave)
+### 1. Tab5 P4 (main pendant and C6 updater)
 
-Unzip `modulus-tab5-c6-v3.1.0.zip`, then:
+The P4 must contain this feature branch before it can update the C6. Build this
+branch with `scripts/build_tab5.ps1`, or use a P4 package produced from this
+branch. Then flash its complete P4 set:
+
+```powershell
+cd path\to\tab5-p4
+esptool.py --chip esp32p4 -p COM5 --before default-reset --after hard-reset write_flash `
+  --flash-mode dio --flash-freq 40m --flash-size 16MB `
+  0x2000 bootloader.bin `
+  0x8000 partition-table.bin `
+  0x10000 modulus_tab5.bin
+```
+
+Power-cycle the Tab5 and wait for the normal Modulus dashboard. Open **M Panel →
+C6 Update** and confirm that the updater page is present before continuing.
+
+### 2. Tab5 C6 through SDIO OTA (normal method)
+
+Build the C6 application with `scripts/build_tab5_c6_modulus.ps1`. The file to
+copy is:
+
+```text
+firmware/tab5-c6/build/network_adapter.bin
+```
+
+It may be renamed to a descriptive name such as
+`modulus-c6-ota-2.12.12.bin`; renaming does not change its contents.
+
+1. Format an SD card as FAT32.
+2. Copy **only the C6 application image** (`network_adapter.bin`, or its renamed
+   equivalent) to the SD-card root.
+3. Insert the card into the running Tab5.
+4. Open **M Panel → C6 Update**.
+5. Select **Refresh SD**, choose the file, and select **Check image**.
+6. Verify that the screen identifies an ESP32-C6 application and accepts its
+   compatibility check.
+7. Select **Flash C6** and confirm the warning. Do not remove power or the SD
+   card while the progress bar is moving.
+8. After activation succeeds, select **Restart Modulus**. Confirm that the
+   dashboard returns and the C6/ESP-NOW connection is available.
+
+> [!WARNING]
+> Do **not** put a merged/full-flash image, release ZIP, `bootloader.bin`,
+> `partition-table.bin`, or `ota_data_initial.bin` into the OTA updater. Those
+> files belong to fixed flash offsets and are not valid OTA application images.
+
+### C6 USB recovery (only if SDIO OTA cannot start)
+
+Use this only if the C6 no longer boots far enough for ESP-Hosted/SDIO OTA.
+Unzip the complete C6 flash package, connect the C6 USB bootloader, then run:
 
 ```powershell
 cd path\to\tab5-c6
@@ -183,22 +252,8 @@ esptool.py --chip esp32c6 -p COM6 --before default-reset --after hard-reset writ
   0x10000 network_adapter.bin
 ```
 
-If the port never appears: hold **BOOT** on the C6 while plugging USB, then run the command.
-
-### 2. Tab5 P4 (main pendant)
-
-Unzip `modulus-tab5-p4-v3.1.0.zip`, then:
-
-```powershell
-cd path\to\tab5-p4
-esptool.py --chip esp32p4 -p COM5 --before default-reset --after hard-reset write_flash `
-  --flash-mode dio --flash-freq 40m --flash-size 16MB `
-  0x2000 bootloader.bin `
-  0x8000 partition-table.bin `
-  0x10000 modulus_tab5.bin
-```
-
-Power-cycle the Tab5. Cold boot should show wireless / SDIO ready (not `0x107`).
+If the port never appears, hold **BOOT** on the C6 while connecting USB. After
+recovery, power-cycle the Tab5.
 
 ### 3. ESP32-S3 bridge (cabinet)
 
@@ -281,9 +336,11 @@ Re-pack local builds into release zips: `.\scripts\package_flash_images.ps1`.
 
 ### Updating the Tab5 C6 from Modulus
 
-The Tab5 **M Panel > C6 Update** page updates the ESP32-C6 over the internal
+The Tab5 **M Panel → C6 Update** page updates the ESP32-C6 over the internal
 ESP-Hosted SDIO connection. Copy an ESP32-C6 **application image** (`.bin`) to
-the root of a FAT-formatted SD card, insert it, and open the page. Use
+the root of a FAT32-formatted SD card, insert it, and open the page. For builds
+from this repository, that application is
+`firmware/tab5-c6/build/network_adapter.bin`. Use
 **Refresh SD**, select the file, then **Check image**. Modulus verifies the ESP
 image header and ESP32-C6 chip ID before enabling **Flash C6**.
 
