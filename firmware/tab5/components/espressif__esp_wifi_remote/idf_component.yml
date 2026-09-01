@@ -1,2 +1,0 @@
-description: No-op stub when ESP-IDF ships in-tree esp_wifi/remote (IDF 6+)
-version: "0.0.1"

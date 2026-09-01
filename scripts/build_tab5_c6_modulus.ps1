@@ -159,7 +159,7 @@ function Inject-ModulusIntoHostedMirror {
     $mainCmake2 = Join-Path $SlaveDir "main\CMakeLists.txt"
     $mc2 = Get-Content $mainCmake2 -Raw
     if ($mc2 -notmatch 'espnow_handler\.c') {
-        $mc2 = $mc2 -replace '(set\(COMPONENT_SRCS\r?\n\t"slave_control\.c")', "`$1`r`n`t`"espnow_handler.c`""
+        $mc2 = $mc2 -replace '(register_component\s*\(\))', "list(APPEND COMPONENT_SRCS `"espnow_handler.c`")`r`n`r`n`$1"
         Set-Content -Path $mainCmake2 -Value $mc2 -NoNewline
         Write-Host "Patched slave main CMakeLists.txt: added espnow_handler.c"
     }
@@ -195,7 +195,7 @@ function Inject-ModulusIntoHostedMirror {
     $mainCmake3 = Join-Path $SlaveDir "main\CMakeLists.txt"
     $mc3 = Get-Content $mainCmake3 -Raw
     if ($mc3 -notmatch 'zigbee_handler\.c') {
-        $mc3 = $mc3 -replace '(\t"espnow_handler\.c")', "`$1`r`n`t`"zigbee_handler.c`"`r`n`t`"thread_handler.c`""
+        $mc3 = $mc3 -replace '(register_component\s*\(\))', "list(APPEND COMPONENT_SRCS `"zigbee_handler.c`" `"thread_handler.c`")`r`n`r`n`$1"
         Set-Content -Path $mainCmake3 -Value $mc3 -NoNewline
         Write-Host "Patched slave main CMakeLists.txt: added zigbee_handler.c + thread_handler.c"
     }

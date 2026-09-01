@@ -279,6 +279,28 @@ zig build tab5-lib    # freestanding Zig library
 
 Re-pack local builds into release zips: `.\scripts\package_flash_images.ps1`.
 
+### Updating the Tab5 C6 from Modulus
+
+The Tab5 **M Panel > C6 Update** page updates the ESP32-C6 over the internal
+ESP-Hosted SDIO connection. Copy an ESP32-C6 **application image** (`.bin`) to
+the root of a FAT-formatted SD card, insert it, and open the page. Use
+**Refresh SD**, select the file, then **Check image**. Modulus verifies the ESP
+image header and ESP32-C6 chip ID before enabling **Flash C6**.
+
+Flashing never starts automatically. Keep power and the SD card connected while
+the progress bar is active. After successful activation, **Restart Modulus** is
+enabled so the P4 can reboot and reconnect to the updated C6 firmware.
+
+Use an ESP-Hosted slave application image compatible with the host component
+version pinned in `firmware/tab5/dependencies.lock`. Do not use a full-flash,
+merged, bootloader, or partition-table image.
+
+Recovery: if the C6 update is interrupted and SDIO no longer starts, restore a
+complete C6 flash set through the C6 USB bootloader (`bootloader.bin`,
+`partition-table.bin`, `ota_data_initial.bin`, and `network_adapter.bin` at the
+documented offsets). The P4 OTA page cannot repair a C6 that no longer boots far
+enough to provide ESP-Hosted OTA.
+
 ### Pinout (Tab5)
 
 | Signal | Pin | Note |

@@ -1294,6 +1294,42 @@ pub fn transportReinit() void {
     device_runtime.transportReinit();
 }
 
+fn copyC6Text(dst: []u8, src: anytype) u8 {
+    var n: usize = 0;
+    while (n < dst.len and n < src.len and src[n] != 0) : (n += 1) dst[n] = @intCast(src[n]);
+    return @intCast(n);
+}
+
+fn c6OtaPoll(eng: *Engine) void {
+    var snap: c.modulus_c6_ota_snapshot_t = undefined;
+    c.modulus_c6_ota_get_snapshot(&snap);
+    var next: ui_engine.m_panel_c6_ota.State = .{};
+    next.phase = @enumFromInt(@min(@as(u8, @intCast(snap.phase)), @intFromEnum(ui_engine.m_panel_c6_ota.Phase.failed)));
+    next.file_count = @min(@as(u8, @intCast(snap.file_count)), ui_engine.m_panel_c6_ota.max_files);
+    next.selected = @min(@as(u8, @intCast(snap.selected)), if (next.file_count > 0) next.file_count - 1 else 0);
+    next.progress = @min(@as(u8, @intCast(snap.progress)), 100);
+    next.c6_connected = snap.c6_connected;
+    next.version_len = copyC6Text(next.version[0..], snap.c6_version);
+    next.status_len = copyC6Text(next.status[0..], snap.status);
+    var i: usize = 0;
+    while (i < next.file_count) : (i += 1) next.file_lens[i] = copyC6Text(next.files[i][0..], snap.files[i]);
+    if (!std.mem.eql(u8, std.mem.asBytes(&eng.m_panel_c6_ota_state), std.mem.asBytes(&next))) {
+        eng.m_panel_c6_ota_state = next;
+        if (eng.m_panel_tool == @intFromEnum(ui_engine.m_panel.ToolId.c6_update)) eng.requestFull();
+    }
+}
+
+fn c6OtaCmd(eng: *Engine, action: ui_engine.m_panel_c6_ota.Action, index: u8) void {
+    switch (action) {
+        .refresh => c.modulus_c6_ota_refresh(),
+        .select => c.modulus_c6_ota_select(index),
+        .check => c.modulus_c6_ota_arm_selected(),
+        .flash => c.modulus_c6_ota_start(),
+        .restart => c.modulus_c6_ota_restart(),
+    }
+    c6OtaPoll(eng);
+}
+
 pub fn dumpBegin() void {
     device_runtime.settingsDumpBegin();
 }
@@ -1369,6 +1405,8 @@ pub fn install(eng: *Engine) void {
     eng.wifi_connect_sink = wifiConnect;
     eng.wifi_disconnect_sink = wifiDisconnect;
     eng.stor_sys_sink = storSysCmd;
+    eng.c6_ota_cmd_sink = c6OtaCmd;
+    eng.c6_ota_poll_sink = c6OtaPoll;
 
     // storage / i2c / wireless deferred to installLate — after boot i2c_coex.
     c.modulus_display_resume_activity_monitor();

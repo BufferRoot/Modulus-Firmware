@@ -448,7 +448,7 @@ static int modulus_sdio_counter_resync(void)
             $sd = $sd2
             Write-Host "Patched host sdio_drv.c: RX counter resync v5 -> v6"
         }
-        if ($sd -notmatch 'MODULUS_SDIO_GPIO_FLUSH_MIN') {
+        if ($sd -notmatch '#define\s+MODULUS_SDIO_GPIO_FLUSH_MIN') {
             $sd2 = $sd -replace '(#define MODULUS_SDIO_DRAIN_CHUNK \(16384\)[^\r\n]*)',
                 "`$1`r`n#define MODULUS_SDIO_GPIO_FLUSH_MIN (4096) /* below: align counters only, no GPIO15 */"
             if ($sd -ne $sd2) {

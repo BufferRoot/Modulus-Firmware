@@ -16,6 +16,8 @@
 #include <esp_partition.h>
 #include <esp_timer.h>
 #include <esp_vfs_fat.h>
+#include <driver/sdmmc_host.h>
+#include <sd_pwr_ctrl_by_on_chip_ldo.h>
 #include <lvgl.h>
 #include <usb/usb_host.h>
 #include <usb/msc_host.h>
@@ -38,6 +40,76 @@ static const char *const k_loglvl_names[] = {
 
 static bool s_sd_mounted = false;
 static char s_mount_point[] = "/sdcard";
+static sdmmc_card_t *s_sd_card = NULL;
+static sd_pwr_ctrl_handle_t s_sd_pwr = NULL;
+
+/* ESP-IDF 6 permits the P4 SDMMC controller to be created only once.
+ * ESP-Hosted owns that controller for C6 SDIO on slot 1; the physical microSD
+ * card must therefore add only slot 0. This is the same workaround used by
+ * Espressif's esp_hosted host_sdcard_with_hosted example. */
+static esp_err_t shared_sdmmc_host_init(void)
+{
+    return ESP_OK;
+}
+
+static esp_err_t shared_sdmmc_host_deinit(void)
+{
+    return ESP_OK;
+}
+
+static esp_err_t shared_sdcard_mount(bool format_if_mount_failed)
+{
+    esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
+        .format_if_mount_failed = format_if_mount_failed,
+        .max_files = 5,
+        .allocation_unit_size = 16 * 1024,
+    };
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.slot = SDMMC_HOST_SLOT_0;
+    host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
+    host.init = shared_sdmmc_host_init;
+    host.deinit = shared_sdmmc_host_deinit;
+
+    sdmmc_slot_config_t slot = {0};
+    bsp_sdcard_sdmmc_get_slot(SDMMC_HOST_SLOT_0, &slot);
+
+    sd_pwr_ctrl_ldo_config_t ldo_cfg = {
+        .ldo_chan_id = 4,
+    };
+    esp_err_t ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_cfg, &s_sd_pwr);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "SD LDO acquire failed: %s", esp_err_to_name(ret));
+        s_sd_pwr = NULL;
+        return ret;
+    }
+    host.pwr_ctrl_handle = s_sd_pwr;
+
+    ret = esp_vfs_fat_sdmmc_mount(s_mount_point, &host, &slot, &mount_cfg, &s_sd_card);
+    if (ret != ESP_OK) {
+        s_sd_card = NULL;
+        const esp_err_t pwr_ret = sd_pwr_ctrl_del_on_chip_ldo(s_sd_pwr);
+        if (pwr_ret != ESP_OK) {
+            ESP_LOGW(TAG, "SD LDO cleanup failed: %s", esp_err_to_name(pwr_ret));
+        }
+        s_sd_pwr = NULL;
+    }
+    return ret;
+}
+
+static esp_err_t shared_sdcard_unmount(void)
+{
+    esp_err_t ret = ESP_OK;
+    if (s_sd_card) {
+        ret = esp_vfs_fat_sdcard_unmount(s_mount_point, s_sd_card);
+        s_sd_card = NULL;
+    }
+    if (s_sd_pwr) {
+        const esp_err_t pwr_ret = sd_pwr_ctrl_del_on_chip_ldo(s_sd_pwr);
+        if (ret == ESP_OK) ret = pwr_ret;
+        s_sd_pwr = NULL;
+    }
+    return ret;
+}
 
 /* USB Type-A host: Power tab owns VBUS (usb5v / PI4IOE E2.P3); BSP host stack
  * enumerates devices when that rail is on. Same pin as BSP_FEATURE_USB. */
@@ -351,7 +423,7 @@ bool modulus_storage_mount(void)
     }
 
     (void)s_mount_point;
-    const esp_err_t ret = bsp_sdcard_mount();
+    const esp_err_t ret = shared_sdcard_mount(false);
     if (ret == ESP_OK) {
         s_sd_mounted = true;
         ESP_LOGI(TAG, "SD mounted at %s", s_mount_point);
@@ -368,7 +440,7 @@ void modulus_storage_unmount(void)
     if (!s_sd_mounted) {
         return;
     }
-    const esp_err_t ret = bsp_sdcard_unmount();
+    const esp_err_t ret = shared_sdcard_unmount();
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "SD unmount failed: %s", esp_err_to_name(ret));
     }
@@ -378,17 +450,10 @@ void modulus_storage_unmount(void)
 
 static bool sd_remount_with_format(void)
 {
-    (void)bsp_sdcard_unmount();
+    (void)shared_sdcard_unmount();
     s_sd_mounted = false;
 
-    static const esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
-        .format_if_mount_failed = true,
-        .max_files = 5,
-        .allocation_unit_size = 16 * 1024,
-    };
-    bsp_sdcard_cfg_t cfg = {0};
-    cfg.mount = &mount_cfg;
-    const esp_err_t ret = bsp_sdcard_sdmmc_mount(&cfg);
+    const esp_err_t ret = shared_sdcard_mount(true);
     if (ret == ESP_OK) {
         s_sd_mounted = true;
         ESP_LOGI(TAG, "SD mounted with format-if-needed at %s", s_mount_point);
@@ -1201,7 +1266,7 @@ bool modulus_storage_format_sd(void)
         return false;
     }
 
-    sdmmc_card_t *card = bsp_sdcard_get_handle();
+    sdmmc_card_t *card = s_sd_card;
     if (!card) {
         ESP_LOGW(TAG, "SD format: no card handle");
         return false;
@@ -1213,7 +1278,7 @@ bool modulus_storage_format_sd(void)
         if (!sd_remount_with_format()) {
             return false;
         }
-        card = bsp_sdcard_get_handle();
+        card = s_sd_card;
         if (!card) {
             return false;
         }

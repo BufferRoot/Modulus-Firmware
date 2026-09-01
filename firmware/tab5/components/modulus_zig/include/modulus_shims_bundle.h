@@ -24,4 +24,5 @@
 #include "ui_shim.h"
 #include "wireless_shim.h"
 #include "c6_sdio_host.h"
+#include "c6_ota_shim.h"
 #include "wireless_shim.h"

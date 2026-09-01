@@ -502,6 +502,7 @@ export fn modulus_zig_ui_frame() void {
         device_ui_bridge.wirelessPoll(eng);
         device_ui_bridge.pollPinLock(eng);
         device_ui_bridge.mirrorC6Sdio(eng);
+        if (eng.c6_ota_poll_sink) |poll| poll(eng);
         if (eng.probe_pin_sink) |pin| {
             eng.qs_probe_trig = pin();
         }

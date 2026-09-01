@@ -14,6 +14,7 @@ set(MODULUS_CORE_SRCS
     "i2c_transport_shim.c"
     "canbus_shim.c"
     "c6_sdio_host.c"
+    "c6_ota_shim.c"
     "zb_uart_host.c"
     "zb_devdb.c"
     "zb_devdb_data.c"
@@ -150,6 +151,7 @@ idf_component_register(
     REQUIRES nvs_flash esp_driver_uart esp_driver_gpio esp_driver_i2c esp_driver_tsens esp_driver_twai
              esp_driver_ppa esp_mm
              esp_timer mbedtls esp-tls bt
+             esp_app_format bootloader_support
              espressif__m5stack_tab5 espressif__bmi270 espressif__esp-dsp espressif__esp_lcd_touch
              ${MODULUS_LVGL_REQ} esp_lcd espressif__usb espressif__usb_host_msc
              esp_wifi esp_netif esp_event espressif__esp_hosted
@@ -169,6 +171,7 @@ set(ESP_HOSTED_DIR "${MODULUS_REPO_ROOT}/firmware/tab5/managed_components/espres
 target_include_directories(${COMPONENT_LIB} PRIVATE
     "${ESP_HOSTED_DIR}/common"
     "${ESP_HOSTED_DIR}/common/transport"
+    "${ESP_HOSTED_DIR}/common/mempool/include"
     "${ESP_HOSTED_DIR}/host"
     "${ESP_HOSTED_DIR}/host/api/include"
     "${ESP_HOSTED_DIR}/host/drivers/transport"
@@ -225,9 +228,16 @@ target_link_options(${COMPONENT_LIB} INTERFACE
 
 set(BMI270_SENSOR_ROOT "${MODULUS_REPO_ROOT}/firmware/tab5/managed_components/espressif__bmi270_sensor")
 set(BMI270_SENSOR_LIB "${BMI270_SENSOR_ROOT}/${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR}/${IDF_TARGET}/libbmi270_sensor.a")
+if(IDF_TARGET STREQUAL "esp32p4")
+    set(BMI270_SENSOR_LIB "${BMI270_SENSOR_ROOT}/${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR}/${IDF_TARGET}/rev3/libbmi270_sensor.a")
+endif()
 if(NOT EXISTS "${BMI270_SENSOR_LIB}")
     foreach(_bmi_ver 5.5 5.4 5.3)
-        set(_bmi_try "${BMI270_SENSOR_ROOT}/${_bmi_ver}/${IDF_TARGET}/libbmi270_sensor.a")
+        if(IDF_TARGET STREQUAL "esp32p4")
+            set(_bmi_try "${BMI270_SENSOR_ROOT}/${_bmi_ver}/${IDF_TARGET}/rev3/libbmi270_sensor.a")
+        else()
+            set(_bmi_try "${BMI270_SENSOR_ROOT}/${_bmi_ver}/${IDF_TARGET}/libbmi270_sensor.a")
+        endif()
         if(EXISTS "${_bmi_try}")
             set(BMI270_SENSOR_LIB "${_bmi_try}")
             break()
@@ -240,6 +250,9 @@ if(EXISTS "${BMI270_SENSOR_LIB}")
         "${BMI270_SENSOR_ROOT}/include"
         "${BMI270_SENSOR_ROOT}/firmware")
     target_link_libraries(${COMPONENT_LIB} PRIVATE bmi270_sensor_api)
+    target_include_directories(${COMPONENT_LIB} PRIVATE
+        "${BMI270_SENSOR_ROOT}/include"
+        "${BMI270_SENSOR_ROOT}/firmware")
 else()
     message(WARNING "bmi270_sensor prebuilt missing — PMIC any-motion wake disabled")
 endif()
