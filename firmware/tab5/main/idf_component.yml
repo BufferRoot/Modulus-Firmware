@@ -8,11 +8,14 @@ dependencies:
   idf: '>=6.0,<7.0'
   espressif/m5stack_tab5: '*'
   espressif/esp_hosted: 2.11.4
-  # Must match the esp_hosted host version; IDF 6.0.1 does NOT bundle this.
+  # IDF 6.0.1 ships esp_wifi/remote in-tree (weak stubs; esp_hosted supplies
+  # strong RPC). Local override is a no-op that satisfies the component name
+  # without pulling managed esp_wifi_remote (which expects missing idf_v6.x
+  # weak sources). Do not replace with registry 1.6.4 on this IDF.
   espressif/esp_wifi_remote:
     override_path: ../components/espressif__esp_wifi_remote
-  # 1.0.7 has an ignored top-level const in a pointer cast; GCC 15 treats it as
-  # an error under this component's warnings-as-errors. Hold until upstream fixes.
+  # 1.0.7: GCC 15 -Wignored-qualifiers on fn-ptr casts; patch_tab5_idf6_deps.ps1
+  # adds -Wno-error=ignored-qualifiers. Hold version until upstream fixes.
   chmorgan/esp-audio-player: 1.0.7
   chmorgan/esp-file-iterator: 1.0.0
   espressif/bmi270_sensor: ^0.1.1

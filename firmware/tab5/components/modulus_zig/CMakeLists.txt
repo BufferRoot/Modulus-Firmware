@@ -162,10 +162,15 @@ idf_component_register(
 idf_component_set_property(${COMPONENT_NAME} WHOLE_ARCHIVE TRUE)
 
 # esp_hosted keeps common/ and transport/ private; Modulus SDIO/BLE shims need them.
+# host/ + host/api/include are public when CONFIG_ESP_HOSTED_ENABLED, but add them
+# explicitly so early-expansion INTERFACE targets and private shims still resolve
+# (BufferRoot/Modulus-Firmware#2).
 set(ESP_HOSTED_DIR "${MODULUS_REPO_ROOT}/firmware/tab5/managed_components/espressif__esp_hosted")
 target_include_directories(${COMPONENT_LIB} PRIVATE
     "${ESP_HOSTED_DIR}/common"
     "${ESP_HOSTED_DIR}/common/transport"
+    "${ESP_HOSTED_DIR}/host"
+    "${ESP_HOSTED_DIR}/host/api/include"
     "${ESP_HOSTED_DIR}/host/drivers/transport"
     "${ESP_HOSTED_DIR}/host/port/esp/freertos/include"
 )

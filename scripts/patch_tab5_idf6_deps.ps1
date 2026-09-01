@@ -668,10 +668,18 @@ if (Test-Path $C6Sdio) {
 
 if (Test-Path $AudioCmake) {
     $a = Get-Content $AudioCmake -Raw
+    $aOrig = $a
     if ($a -match 'REQUIRES driver') {
-        $a2 = $a -replace 'REQUIRES driver', 'REQUIRES esp_driver_i2s'
-        Set-Content -Path $AudioCmake -Value $a2 -NoNewline
-        Write-Host "Patched chmorgan__esp-audio-player for esp_driver_i2s"
+        $a = $a -replace 'REQUIRES driver', 'REQUIRES esp_driver_i2s'
+    }
+    # GCC 15: reinterpret_cast<void*>(fn_ptr) → -Wignored-qualifiers; component
+    # treats warnings as errors (BufferRoot/Modulus-Firmware#2).
+    if ($a -notmatch 'Wno-error=ignored-qualifiers') {
+        $a = $a.TrimEnd() + "`r`n`r`ntarget_compile_options(`${COMPONENT_LIB} PRIVATE -Wno-error=ignored-qualifiers)`r`n"
+    }
+    if ($a -ne $aOrig) {
+        Set-Content -Path $AudioCmake -Value $a -NoNewline
+        Write-Host "Patched chmorgan__esp-audio-player for esp_driver_i2s + GCC 15 ignored-qualifiers"
     }
 }
 
