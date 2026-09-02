@@ -58,14 +58,11 @@ jobs:
         with:
           version: "v6.0.1"
 
-      - name: Patch IDF 6 managed deps
-        shell: pwsh
-        run: ./scripts/patch_tab5_idf6_deps.ps1
-
       - name: IDF build
         working-directory: firmware/tab5
         run: |
           export ZIG_EXE="$(command -v zig)"
           export ZIG_LIB_DIR="$(zig env | python3 -c "import sys,re; m=re.search(r'lib_dir = \"([^\"]+)\"', sys.stdin.read()); print(m.group(1) if m else '')")"
           idf.py set-target esp32p4
+          pwsh -File ../../scripts/patch_tab5_idf6_deps.ps1
           idf.py build

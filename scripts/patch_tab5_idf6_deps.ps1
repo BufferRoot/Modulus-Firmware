@@ -672,6 +672,10 @@ if (Test-Path $AudioCmake) {
     if ($a -match 'REQUIRES driver') {
         $a = $a -replace 'REQUIRES driver', 'REQUIRES esp_driver_i2s'
     }
+    if ($a -notmatch '\besp_driver_i2s\b') {
+        $audioRequires = 'list(APPEND requires "esp_driver_i2s")' + "`r`n`r`n" + '$1'
+        $a = $a -replace '(?m)^(idf_component_register\()', $audioRequires
+    }
     # GCC 15: reinterpret_cast<void*>(fn_ptr) → -Wignored-qualifiers; component
     # treats warnings as errors (BufferRoot/Modulus-Firmware#2).
     if ($a -notmatch 'Wno-error=ignored-qualifiers') {
