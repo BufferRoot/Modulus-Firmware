@@ -43,7 +43,7 @@ jobs:
         run: ./scripts/check_ui_ascii.ps1
 
       - name: Zig CI gate (test + fuzz + translate + tab5-lib + headers + NVS)
-        run: zig build ci -- --test-timeout 60s
+        run: zig build ci --summary all
 
       - name: Cache managed components
         uses: actions/cache@v4
