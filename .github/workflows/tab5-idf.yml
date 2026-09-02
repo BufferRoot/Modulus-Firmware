@@ -36,7 +36,7 @@ jobs:
           version: ${{ steps.zig.outputs.version }}
 
       - name: Verify Zig patch matches pin
-        run: test "$(zig version | awk '{print $2}')" = "$(tr -d '\r\n' < .github/zig-version)"
+        run: test "$(zig version | tr -d '\r\n')" = "$(tr -d '\r\n' < .github/zig-version)"
 
       - name: UI ASCII check
         shell: pwsh
